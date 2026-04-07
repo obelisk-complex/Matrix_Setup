@@ -1,0 +1,76 @@
+# -*- mode: ruby -*-
+# Matrix Stack Setup — Multi-Distro Integration Test
+# Usage: cd tests/distro && vagrant up [box-name]
+# Boxes: ubuntu2404, debian12, fedora40, centos9, arch
+
+Vagrant.configure("2") do |config|
+  config.vm.synced_folder "../../", "/matrix-setup", type: "rsync",
+    rsync__exclude: [".git/", "data/", "backups/", "*.env"]
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.memory = "2048"
+    vb.cpus = 2
+  end
+
+  config.vm.provider "libvirt" do |lv|
+    lv.memory = 2048
+    lv.cpus = 2
+  end
+
+  # Ubuntu 24.04
+  config.vm.define "ubuntu2404" do |node|
+    node.vm.box = "bento/ubuntu-24.04"
+    node.vm.hostname = "matrix-test-ubuntu"
+    node.vm.network "private_network", type: "dhcp"
+    node.vm.provision "shell", inline: <<-SHELL
+      apt-get update -qq
+      apt-get install -y -qq podman podman-compose curl openssl jq
+      cd /matrix-setup && bash tests/distro/test_integration.sh
+    SHELL
+  end
+
+  # Debian 12
+  config.vm.define "debian12" do |node|
+    node.vm.box = "bento/debian-12"
+    node.vm.hostname = "matrix-test-debian"
+    node.vm.network "private_network", type: "dhcp"
+    node.vm.provision "shell", inline: <<-SHELL
+      apt-get update -qq
+      apt-get install -y -qq podman podman-compose curl openssl jq
+      cd /matrix-setup && bash tests/distro/test_integration.sh
+    SHELL
+  end
+
+  # Fedora 40
+  config.vm.define "fedora40" do |node|
+    node.vm.box = "bento/fedora-40"
+    node.vm.hostname = "matrix-test-fedora"
+    node.vm.network "private_network", type: "dhcp"
+    node.vm.provision "shell", inline: <<-SHELL
+      dnf install -y -q podman podman-compose curl openssl jq
+      cd /matrix-setup && bash tests/distro/test_integration.sh
+    SHELL
+  end
+
+  # CentOS Stream 9
+  config.vm.define "centos9" do |node|
+    node.vm.box = "bento/centos-stream-9"
+    node.vm.hostname = "matrix-test-centos"
+    node.vm.network "private_network", type: "dhcp"
+    node.vm.provision "shell", inline: <<-SHELL
+      dnf install -y -q podman podman-compose curl openssl jq
+      cd /matrix-setup && bash tests/distro/test_integration.sh
+    SHELL
+  end
+
+  # Arch Linux
+  config.vm.define "arch" do |node|
+    node.vm.box = "archlinux/archlinux"
+    node.vm.hostname = "matrix-test-arch"
+    node.vm.network "private_network", type: "dhcp"
+    node.vm.provision "shell", inline: <<-SHELL
+      pacman -Syu --noconfirm podman podman-compose curl openssl jq
+      cd /matrix-setup && bash tests/distro/test_integration.sh
+    SHELL
+  end
+end

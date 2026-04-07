@@ -1,0 +1,36 @@
+# Secrets and state
+*.env
+.env
+.matrix-setup.state
+*.secret
+secrets/
+
+# Runtime data
+data/
+backups/
+*.log
+
+# Generated configs (local)
+*.generated.yml
+*.generated.yaml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/
+
+# Editor
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.sublime-*
+
+# Vagrant
+.vagrant/
+
+# Test artifacts
+/tmp/matrix-test.*

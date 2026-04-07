@@ -1,0 +1,113 @@
+# Matrix Stack Setup — Example Configuration
+# Copy this file and customize for headless (non-interactive) mode:
+#   sudo bash setup.sh --headless --config my-config.toml
+#
+# Generate a fresh copy: sudo bash setup.sh --generate-config
+
+# --- Domain ---
+# IMPORTANT: The server name is PERMANENT. Cannot be changed after setup.
+[domain]
+name = "matrix.example.com"
+confirmed = true    # Required in headless mode — you accept domain permanence
+
+# --- Homeserver ---
+[homeserver]
+type = "synapse"    # "synapse" or "dendrite"
+
+# --- Federation ---
+[federation]
+enabled = true
+
+# --- Registration ---
+[registration]
+policy = "invite-only"  # "closed", "invite-only", "open-email", "open-captcha"
+# recaptcha_public_key = ""   # Required if policy = "open-captcha"
+# recaptcha_private_key = ""  # Required if policy = "open-captcha"
+
+# --- Admin Account ---
+[admin]
+username = "admin"
+password = "changeme-at-least-8-chars"
+
+# --- Database ---
+[database]
+mode = "auto"       # "auto" (detect host PG or containerize), "container", "host"
+# host = "localhost"  # Only if mode = "host"
+# port = 5432
+# user = "synapse"
+# name = "synapse"
+
+# --- Web Client ---
+[webclient]
+type = "element"    # "element", "cinny", "schildichat", "none"
+subdomain = "chat"
+
+# --- Coturn TURN/STUN ---
+[coturn]
+enabled = true
+# min_port = 49152
+# max_port = 65535
+
+# --- SMTP (optional) ---
+[smtp]
+enabled = false
+# host = "smtp.example.com"
+# port = 587
+# user = "noreply@example.com"
+# password = "smtp-password"
+# from = "noreply@matrix.example.com"
+
+# --- Bridges (Synapse only) ---
+[bridges]
+enabled = ""        # Comma-separated: "telegram,discord,whatsapp,signal,slack,irc"
+
+# Telegram bridge (if enabled)
+# [bridges.telegram]
+# api_id = "12345"
+# api_hash = "0123456789abcdef"
+# bot_token = "disabled"
+
+# IRC bridge (if enabled)
+# [bridges.irc]
+# owner = "@admin:matrix.example.com"
+
+# --- Admin UI (Synapse only) ---
+[admin_ui]
+enabled = true
+subdomain = "admin"
+
+# --- Monitoring (optional) ---
+[monitoring]
+enabled = false
+grafana_subdomain = "grafana"
+
+# --- Backup ---
+[backup]
+retention_daily = 7
+retention_weekly = 4
+encryption = "none" # "none", "gpg", "age"
+# encryption_key = ""  # GPG key ID or age public key
+upload = "none"     # "none", "rclone"
+# upload_target = ""   # rclone remote path
+
+# --- Server Hardening ---
+[hardening]
+ssh = true
+firewall = true
+fail2ban = true
+sysctl = true
+auto_updates = true
+
+# --- Secrets ---
+[secrets]
+mode = "env"        # "env" (.env file) or "podman" (Podman native secrets)
+
+# --- Advanced ---
+[advanced]
+podman_compose_command = "auto"  # "auto", "podman compose", "podman-compose", "docker-compose"
+# install_dir = "/opt/matrix"
+# matrix_user = "matrix"
+
+# --- DNS (optional) ---
+# [dns]
+# cloudflare_api_token = ""  # For automatic DNS record creation + DNS-01 ACME challenge
