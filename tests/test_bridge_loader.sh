@@ -23,6 +23,7 @@ for plugin in "$BRIDGE_DIR"/*.sh; do
             echo "ok $_TEST_NUM - $basename implements $func"
         else
             echo "not ok $_TEST_NUM - $basename missing $func"
+            _TEST_FAILURES=$((_TEST_FAILURES + 1))
         fi
     done
 done
@@ -79,6 +80,7 @@ for plugin in "$BRIDGE_DIR"/*.sh; do
     else
         _TEST_NUM=$((_TEST_NUM + 1))
         echo "not ok $_TEST_NUM - $basename: registration file not created"
+        _TEST_FAILURES=$((_TEST_FAILURES + 1))
     fi
 done
 
@@ -114,6 +116,7 @@ for plugin in "$BRIDGE_DIR"/*.sh; do
         _TEST_NUM=$((_TEST_NUM + 1))
         if [[ -n "${seen_ids[$bridge_id]:-}" ]]; then
             echo "not ok $_TEST_NUM - duplicate bridge ID: $bridge_id"
+            _TEST_FAILURES=$((_TEST_FAILURES + 1))
         else
             seen_ids["$bridge_id"]=1
             echo "ok $_TEST_NUM - unique bridge ID: $bridge_id"

@@ -81,10 +81,11 @@ assert_eq "value2" "${TOML_VALUES[key2]:-}" "parse value with inline comment"
 
 # --- Test: missing file ---
 declare -gA TOML_VALUES=()
+_TEST_NUM=$((_TEST_NUM + 1))
 if toml_parse_file "$TEST_TMP/nonexistent.toml" 2>/dev/null; then
-    echo "not ok - should fail on missing file"
+    echo "not ok $_TEST_NUM - should fail on missing file"
+    _TEST_FAILURES=$((_TEST_FAILURES + 1))
 else
-    _TEST_NUM=$((_TEST_NUM + 1))
     echo "ok $_TEST_NUM - fails on missing file"
 fi
 

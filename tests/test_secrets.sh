@@ -30,6 +30,7 @@ if (( len >= 32 )); then
     echo "ok $_TEST_NUM - secret length >= 32 chars (got $len)"
 else
     echo "not ok $_TEST_NUM - secret too short: $len chars"
+    _TEST_FAILURES=$((_TEST_FAILURES + 1))
 fi
 
 # --- Test: bridge token generation ---

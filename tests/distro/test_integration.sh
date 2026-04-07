@@ -66,8 +66,7 @@ EOF
 if bash "$PROJECT_DIR/setup.sh" --headless --config /tmp/test-invalid.toml 2>&1 | grep -qi "error\|fail"; then
     pass "invalid config rejected"
 else
-    # It might exit non-zero
-    pass "invalid config handled"
+    fail "invalid config should have been rejected"
 fi
 
 # 6. Template rendering

@@ -43,6 +43,7 @@ assert_file_contains "$TEST_TMP/cond.out" "end config" "content after conditiona
 if grep -q "metrics_port" "$TEST_TMP/cond.out"; then
     _TEST_NUM=$((_TEST_NUM + 1))
     echo "not ok $_TEST_NUM - false conditional should be removed"
+    _TEST_FAILURES=$((_TEST_FAILURES + 1))
 else
     _TEST_NUM=$((_TEST_NUM + 1))
     echo "ok $_TEST_NUM - false conditional block removed"
@@ -87,6 +88,7 @@ for tpl in "$PROJECT_DIR"/templates/compose/*.yml; do
         echo "ok $_TEST_NUM - compose template exists and non-empty: $(basename "$tpl")"
     else
         echo "not ok $_TEST_NUM - compose template missing or empty: $(basename "$tpl")"
+        _TEST_FAILURES=$((_TEST_FAILURES + 1))
     fi
 done
 

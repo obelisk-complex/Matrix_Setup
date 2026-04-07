@@ -71,6 +71,7 @@ for tpl in postgres.yml synapse.yml caddy.yml coturn.yml; do
     else
         _TEST_NUM=$((_TEST_NUM + 1))
         echo "not ok $_TEST_NUM - $tpl has no template variables"
+        _TEST_FAILURES=$((_TEST_FAILURES + 1))
     fi
 done
 

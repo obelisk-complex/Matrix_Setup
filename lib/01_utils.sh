@@ -228,7 +228,7 @@ template_render() {
     # Substitute {{VAR}} placeholders
     for key in "${!_vars[@]}"; do
         local escaped_val
-        escaped_val=$(printf '%s' "${_vars[$key]}" | sed 's/[&/\]/\\&/g')
+        escaped_val=$(printf '%s' "${_vars[$key]}" | sed 's/[&/\|]/\\&/g')
         content=$(echo "$content" | sed "s|{{${key}}}|${escaped_val}|g")
     done
 

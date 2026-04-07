@@ -73,6 +73,8 @@ main() {
 
     for test_file in "$SCRIPT_DIR"/test_*.sh; do
         [[ -f "$test_file" ]] || continue
+        [[ "$(basename "$test_file")" == "test_runner.sh" ]] && continue
+        [[ "$(basename "$test_file")" == "test_utils.sh" ]] && continue
 
         # Optional filter
         if [[ -n "$filter" && "$(basename "$test_file")" != *"$filter"* ]]; then

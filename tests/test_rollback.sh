@@ -22,6 +22,7 @@ if [[ -n "$MANIFEST_FILE" && -f "$MANIFEST_FILE" ]]; then
 else
     echo "not ok $_TEST_NUM - manifest file created"
     echo "#   MANIFEST_FILE=$MANIFEST_FILE"
+    _TEST_FAILURES=$((_TEST_FAILURES + 1))
 fi
 
 # --- Test: snapshot entries are written ---
