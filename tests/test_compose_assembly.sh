@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for compose fragment templates and assembly logic
+# Tests for compose fragment templates (structure and content validation)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

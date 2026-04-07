@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Tests for lib/07_network.sh — domain validation
+# Tests for domain validation (_validate_domain from lib/04_config.sh)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/test_utils.sh"
-source "$LIB_DIR/04_config.sh"  # for _validate_domain
+source "$LIB_DIR/04_config.sh"
 
 # --- Test: valid domains ---
 for domain in \
@@ -47,19 +47,15 @@ for domain in \
     fi
 done
 
-# --- Test: max length domain (253 chars) ---
-# Build a domain right at 253 chars
+# --- Test: over-length domain (>253 chars) should be rejected ---
 long_label="a$(printf '%0.sa' {1..61})a"  # 63-char label
-long_domain="${long_label}.${long_label}.${long_label}.com"
-_TEST_NUM=$((_TEST_NUM + 1))
-if [[ ${#long_domain} -le 253 ]]; then
-    if _validate_domain "$long_domain" 2>/dev/null; then
-        echo "ok $_TEST_NUM - max-length domain accepted (${#long_domain} chars)"
-    else
-        echo "ok $_TEST_NUM - max-length domain handled (${#long_domain} chars)"
-    fi
+over_domain="${long_label}.${long_label}.${long_label}.${long_label}.com"
+if _validate_domain "$over_domain" 2>/dev/null; then
+    _TEST_NUM=$((_TEST_NUM + 1))
+    echo "not ok $_TEST_NUM - over-length domain should be rejected (${#over_domain} chars)"
 else
-    echo "ok $_TEST_NUM - over-length domain tested (${#long_domain} chars)"
+    _TEST_NUM=$((_TEST_NUM + 1))
+    echo "ok $_TEST_NUM - over-length domain rejected (${#over_domain} chars)"
 fi
 
 test_report
