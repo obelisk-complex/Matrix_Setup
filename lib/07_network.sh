@@ -11,6 +11,50 @@ PORT_443_PROCESS=""
 
 # --- Public API ---
 
+# Phase entry point invoked from setup.sh main(). Orchestrates the
+# domain/DNS/port checks against the wizard-confirmed CONFIG[domain.name].
+# Treats DNS-mismatch and port-in-use as warnings (non-fatal) so an admin
+# can proceed with an existing reverse proxy or pre-DNS-propagation host;
+# treats a syntactically invalid domain as fatal.
+network_validate() {
+    local domain="${CONFIG[domain.name]:-}"
+
+    if [[ -z "$domain" ]]; then
+        log_error "No domain configured (CONFIG[domain.name])."
+        return 1
+    fi
+
+    if ! network_validate_domain "$domain"; then
+        log_error "Invalid domain: $domain"
+        return 1
+    fi
+
+    if network_check_dns "$domain"; then
+        log_substep "DNS resolves: $domain -> ${DNS_A:-${DNS_AAAA}}"
+        if network_dns_matches_server "$domain"; then
+            log_substep "DNS matches this host"
+        else
+            log_warn "DNS does not point to this server's public IP."
+            log_warn "  Domain resolves to: ${DNS_A:-none} ${DNS_AAAA:+(v6: $DNS_AAAA)}"
+            log_warn "  Server public IP:   ${PUBLIC_IPV4:-unknown} ${PUBLIC_IPV6:+(v6: $PUBLIC_IPV6)}"
+            log_warn "  Federation, TLS issuance, and inbound reachability will fail until DNS is corrected."
+        fi
+    else
+        log_warn "DNS lookup for $domain returned no records."
+        log_warn "  TLS issuance via Let's Encrypt and federation will fail until DNS is configured."
+    fi
+
+    if network_check_ports; then
+        log_substep "Ports 80/443 free"
+    else
+        [[ -n "$PORT_80_PROCESS"  ]] && log_warn "Port 80 in use by: $PORT_80_PROCESS"
+        [[ -n "$PORT_443_PROCESS" ]] && log_warn "Port 443 in use by: $PORT_443_PROCESS"
+        log_warn "Existing proxy will be detected in the next phase."
+    fi
+
+    return 0
+}
+
 network_validate_domain() {
     local domain="$1"
     _validate_domain "$domain"
