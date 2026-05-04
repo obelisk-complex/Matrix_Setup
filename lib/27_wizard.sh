@@ -67,17 +67,22 @@ wizard_step_system_check() {
 # result. Returns the cleaned value on stdout.
 _normalize_domain() {
     local d="$1"
-    # Strip ASCII whitespace (including \r from Windows clipboards)
-    d="${d#"${d%%[![:space:]]*}"}"
-    d="${d%"${d##*[![:space:]]}"}"
-    # Strip scheme
+    # Strip ANSI CSI sequences (left over when read -e is unavailable and
+    # cursor keys leak into the input as e.g. \e[D).
+    d=$(printf '%s' "$d" | LC_ALL=C sed -E $'s/\x1b\\[[0-9;?]*[a-zA-Z]//g; s/\x1b[][^ ]*//g')
+    # Strip every C0 control character and DEL (0x00-0x1f, 0x7f).
+    d=$(printf '%s' "$d" | LC_ALL=C tr -d '\000-\037\177')
+    # Strip ASCII whitespace anywhere in the string.
+    d="${d// /}"
+    d="${d//$'\t'/}"
+    # Strip scheme.
     d="${d#http://}"
     d="${d#https://}"
     d="${d#//}"
-    # Strip trailing slash and trailing FQDN dot
+    # Strip trailing slash and trailing FQDN dot.
     d="${d%/}"
     d="${d%.}"
-    # Lowercase
+    # Lowercase.
     d="${d,,}"
     printf '%s' "$d"
 }

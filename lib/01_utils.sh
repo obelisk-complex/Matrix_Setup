@@ -75,12 +75,16 @@ prompt_value() {
         return 0
     fi
 
+    # The function is invoked via $(prompt_value ...) which captures stdout.
+    # Send the prompt to stderr so the user actually sees it, and read with
+    # -e for readline line-editing (so backspace/arrow keys behave instead
+    # of being captured as raw escape sequences).
     if [[ -n "$default" ]]; then
-        printf '%s [%s%s%s]: ' "$question" "$C_CYAN" "$default" "$C_RESET"
+        printf '%s [%s%s%s]: ' "$question" "$C_CYAN" "$default" "$C_RESET" >&2
     else
-        printf '%s: ' "$question"
+        printf '%s: ' "$question" >&2
     fi
-    read -r value
+    read -er value
     echo "${value:-$default}"
 }
 
@@ -94,9 +98,9 @@ prompt_password() {
         return 0
     fi
 
-    printf '%s: ' "$question"
+    printf '%s: ' "$question" >&2
     read -rs value
-    printf '\n'
+    printf '\n' >&2
     echo "$value"
 }
 
@@ -139,12 +143,12 @@ prompt_select() {
         return 0
     fi
 
-    printf '%s\n' "$question"
+    printf '%s\n' "$question" >&2
     for i in "${!options[@]}"; do
-        printf '  %s[%d]%s %s\n' "$C_CYAN" $((i + 1)) "$C_RESET" "${options[$i]}"
+        printf '  %s[%d]%s %s\n' "$C_CYAN" $((i + 1)) "$C_RESET" "${options[$i]}" >&2
     done
-    printf 'Selection [1]: '
-    read -r choice
+    printf 'Selection [1]: ' >&2
+    read -er choice
     choice="${choice:-1}"
 
     if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )); then
@@ -168,12 +172,12 @@ prompt_multiselect() {
         return 0
     fi
 
-    printf '%s (comma-separated numbers, or empty for none)\n' "$question"
+    printf '%s (comma-separated numbers, or empty for none)\n' "$question" >&2
     for i in "${!options[@]}"; do
-        printf '  %s[%d]%s %s\n' "$C_CYAN" $((i + 1)) "$C_RESET" "${options[$i]}"
+        printf '  %s[%d]%s %s\n' "$C_CYAN" $((i + 1)) "$C_RESET" "${options[$i]}" >&2
     done
-    printf 'Selection: '
-    read -r input
+    printf 'Selection: ' >&2
+    read -er input
 
     if [[ -z "$input" ]]; then
         echo ""
