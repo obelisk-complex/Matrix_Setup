@@ -76,7 +76,7 @@ report_generate() {
         echo "  Backup script:  ${install_dir}/scripts/backup.sh"
         echo "  Restore script: ${install_dir}/scripts/restore.sh"
 
-        if [[ "${#BRIDGES_ENABLED[@]:-0}" -gt 0 ]]; then
+        if (( ${#BRIDGES_ENABLED[@]} > 0 )); then
             echo ""
             echo "--- Bridges ---"
             for b in "${BRIDGES_ENABLED[@]}"; do

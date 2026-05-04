@@ -71,7 +71,7 @@ compose_assemble() {
     done
 
     # Add bridge compose fragments
-    if [[ "${#BRIDGES_ENABLED[@]:-0}" -gt 0 ]]; then
+    if (( ${#BRIDGES_ENABLED[@]} > 0 )); then
         for bridge_name in "${BRIDGES_ENABLED[@]}"; do
             local plugin="${SCRIPT_DIR}/bridges/${bridge_name}.sh"
             if [[ -f "$plugin" ]]; then
