@@ -36,19 +36,19 @@ wizard_step_system_check() {
     log_step "System Check"
 
     log_substep "OS: ${OS_ID:-unknown} ${OS_VERSION:-} (${OS_FAMILY:-unknown})"
-    log_substep "Arch: ${DETECTED_ARCH:-$(uname -m)}"
-    log_substep "RAM: ${DETECTED_RAM_MB:-?} MB"
-    log_substep "Disk: ${DETECTED_DISK_GB:-?} GB free"
+    log_substep "Arch: ${SYSTEM_ARCH:-$(uname -m)}"
+    log_substep "RAM: ${SYSTEM_RAM_MB:-?} MB"
+    log_substep "Disk: ${DISK_FREE_GB:-?} GB free"
 
-    if [[ "${DETECTED_RAM_MB:-0}" -lt "$MIN_RAM_MB" ]]; then
-        log_error "Insufficient RAM: ${DETECTED_RAM_MB} MB (minimum: ${MIN_RAM_MB} MB)"
+    if [[ "${SYSTEM_RAM_MB:-0}" -lt "$MIN_RAM_MB" ]]; then
+        log_error "Insufficient RAM: ${SYSTEM_RAM_MB:-0} MB (minimum: ${MIN_RAM_MB} MB)"
         exit "$E_PREREQ"
-    elif [[ "${DETECTED_RAM_MB:-0}" -lt "$WARN_RAM_MB" ]]; then
-        log_warn "Low RAM (${DETECTED_RAM_MB} MB). Dendrite is recommended for <2GB."
+    elif [[ "${SYSTEM_RAM_MB:-0}" -lt "$WARN_RAM_MB" ]]; then
+        log_warn "Low RAM (${SYSTEM_RAM_MB:-0} MB). Dendrite is recommended for <2GB."
     fi
 
-    if [[ "${DETECTED_DISK_GB:-0}" -lt "$MIN_DISK_GB" ]]; then
-        log_error "Insufficient disk: ${DETECTED_DISK_GB} GB (minimum: ${MIN_DISK_GB} GB)"
+    if [[ "${DISK_FREE_GB:-0}" -lt "$MIN_DISK_GB" ]]; then
+        log_error "Insufficient disk: ${DISK_FREE_GB:-0} GB (minimum: ${MIN_DISK_GB} GB)"
         exit "$E_PREREQ"
     fi
 
@@ -97,7 +97,7 @@ wizard_step_domain() {
 wizard_step_homeserver() {
     log_step "Homeserver Selection"
 
-    local ram="${DETECTED_RAM_MB:-4096}"
+    local ram="${SYSTEM_RAM_MB:-4096}"
     local recommendation=""
     if (( ram < 2048 )); then
         recommendation=" (recommended for <2GB RAM)"

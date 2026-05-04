@@ -17,7 +17,7 @@ compose_assemble() {
     local templates_dir="${SCRIPT_DIR}/templates/compose"
 
     # SELinux volume labels
-    if [[ "${DETECTED_MAC:-}" == "selinux" ]]; then
+    if [[ "${SELINUX_MODE:-absent}" == "enforcing" || "${SELINUX_MODE:-absent}" == "permissive" ]]; then
         VOLUME_LABEL=":Z"
     fi
 

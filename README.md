@@ -34,7 +34,7 @@ Podman 4.4.0+ is required and will be installed automatically if missing.
 ## Quick Start
 
 ```bash
-git clone https://github.com/your-username/Matrix_Setup.git
+git clone https://github.com/obelisk-complex/Matrix_Setup.git
 cd Matrix_Setup
 sudo bash setup.sh
 ```
