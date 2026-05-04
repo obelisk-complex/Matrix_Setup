@@ -60,15 +60,39 @@ wizard_step_system_check() {
 }
 
 # --- Step 2: Domain ---
+
+# Normalise a user-entered domain: strip surrounding whitespace, any
+# leading scheme (http:// or https://), any leading "//", any trailing
+# slash, and a trailing "." (root-zone dot in FQDNs). Lowercase the
+# result. Returns the cleaned value on stdout.
+_normalize_domain() {
+    local d="$1"
+    # Strip ASCII whitespace (including \r from Windows clipboards)
+    d="${d#"${d%%[![:space:]]*}"}"
+    d="${d%"${d##*[![:space:]]}"}"
+    # Strip scheme
+    d="${d#http://}"
+    d="${d#https://}"
+    d="${d#//}"
+    # Strip trailing slash and trailing FQDN dot
+    d="${d%/}"
+    d="${d%.}"
+    # Lowercase
+    d="${d,,}"
+    printf '%s' "$d"
+}
+
 wizard_step_domain() {
     log_step "Domain Configuration"
 
     echo ""
     printf '%s%s  WARNING: The Matrix server name is PERMANENT.%s\n' "$C_BOLD" "$C_YELLOW" "$C_RESET"
-    printf '%s  Once set, it cannot be changed without losing all data and federation history.%s\n\n' "$C_YELLOW" "$C_RESET"
+    printf '%s  Once set, it cannot be changed without losing all data and federation history.%s\n' "$C_YELLOW" "$C_RESET"
+    printf '%s  Use a bare domain (e.g. example.com), not a URL or subdomain.%s\n\n' "$C_YELLOW" "$C_RESET"
 
-    local domain
-    domain=$(prompt_value "Enter your domain (e.g., example.com)" "")
+    local domain raw
+    raw=$(prompt_value "Matrix server name (bare domain, e.g. example.com)" "")
+    domain=$(_normalize_domain "$raw")
 
     if [[ -z "$domain" ]]; then
         log_error "Domain is required"
@@ -76,16 +100,20 @@ wizard_step_domain() {
     fi
 
     if ! _validate_domain "$domain"; then
-        log_error "Invalid domain format: $domain"
+        log_error "Invalid domain format: '$domain' (${#domain} bytes)"
+        log_error "  Expected a bare domain like 'example.com'."
+        log_error "  Allowed: lowercase letters, digits, hyphens, dots."
+        log_error "  Disallowed: schemes (http://), spaces, paths, ports, underscores."
         exit "$E_CONFIG"
     fi
 
     # Double entry confirmation
-    local domain_confirm
-    domain_confirm=$(prompt_value "Confirm domain (type it again)" "")
+    local domain_confirm raw_confirm
+    raw_confirm=$(prompt_value "Confirm domain (type it again)" "")
+    domain_confirm=$(_normalize_domain "$raw_confirm")
 
     if [[ "$domain" != "$domain_confirm" ]]; then
-        log_error "Domains do not match"
+        log_error "Domains do not match: '$domain' vs '$domain_confirm'"
         exit "$E_CONFIG"
     fi
 
