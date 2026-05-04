@@ -109,6 +109,10 @@ main() {
         exit "$E_OK"
     fi
 
+    # System detection must run before the wizard so the system-check step
+    # has real values (RAM, disk, OS) instead of the defaults from 02_detect.sh.
+    run_phase "System detection"        detect_system
+
     # Interactive wizard or headless
     if [[ "$HEADLESS" == "true" ]]; then
         log_banner
@@ -131,7 +135,6 @@ main() {
     rollback_init_manifest
 
     # === Phase 3: System Preparation ===
-    run_phase "System detection"        detect_system
     run_phase "Prerequisites"           prerequisites_check
     run_phase "Matrix user setup"       user_setup
     run_phase "Network validation"      network_validate
