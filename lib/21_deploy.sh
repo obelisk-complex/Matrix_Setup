@@ -59,20 +59,28 @@ _deploy_wait_for_homeserver() {
     log_substep "Waiting for homeserver to become ready..."
 
     local url="http://localhost:${PORT_SYNAPSE}/_matrix/client/versions"
-    local timeout=60
+    # First-boot of Synapse can run 90-150s on small VMs (signing key
+    # generation, schema init, media path setup). 60s was too tight.
+    local timeout="${CONFIG[deploy.homeserver_timeout]:-180}"
     local elapsed=0
+    local last_log=0
 
     while (( elapsed < timeout )); do
         if curl -sf "$url" &>/dev/null; then
             log_substep "Homeserver is ready (${elapsed}s)"
             return 0
         fi
+        # Heartbeat every 30s so the user sees progress on slow boots.
+        if (( elapsed - last_log >= 30 )); then
+            log_substep "  ...still waiting (${elapsed}s/${timeout}s)"
+            last_log=$elapsed
+        fi
         sleep 2
         elapsed=$((elapsed + 2))
     done
 
     log_error "Homeserver did not become ready within ${timeout}s"
-    log_error "Check logs: $COMPOSE_CMD logs homeserver"
+    log_error "Check logs: ${COMPOSE_CMD:-podman compose} logs homeserver"
     return 1
 }
 
