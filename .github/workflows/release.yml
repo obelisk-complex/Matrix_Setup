@@ -32,13 +32,18 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
-      - name: Sign installer + SBOMs (keyless)
+      - name: Sign installer + SBOMs (keyless, Sigstore bundles)
         run: |
+          # Emit a single self-contained Sigstore bundle per artifact (cert +
+          # signature + Rekor entry). Verified with:
+          #   cosign verify-blob <file> --bundle <file>.cosign.bundle \
+          #     --new-bundle-format --certificate-identity <id> \
+          #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
           cosign sign-blob --yes setup.sh \
-            --output-signature setup.sh.sig --output-certificate setup.sh.pem
+            --bundle setup.sh.cosign.bundle --new-bundle-format
           for f in sbom/*.cdx.json; do
             cosign sign-blob --yes "$f" \
-              --output-signature "$f.sig" --output-certificate "$f.pem"
+              --bundle "$f.cosign.bundle" --new-bundle-format
           done
 
       - name: Attest build provenance (SLSA)
@@ -53,7 +58,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${GITHUB_REF_NAME}" \
-            setup.sh setup.sh.sig setup.sh.pem \
-            sbom/*.cdx.json \
+            setup.sh setup.sh.cosign.bundle \
+            sbom/*.cdx.json sbom/*.cosign.bundle \
             --title "${GITHUB_REF_NAME}" \
             --notes-file CHANGELOG.md

@@ -1,6 +1,6 @@
 # Matrix Setup
 
-**Current release: v0.1.0** · see [CHANGELOG.md](CHANGELOG.md)
+**Current release: v0.1.1** · see [CHANGELOG.md](CHANGELOG.md)
 
 A modular Bash script that deploys a complete [Matrix](https://matrix.org) communication stack on any Linux server using Podman Compose.
 

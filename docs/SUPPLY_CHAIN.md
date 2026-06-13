@@ -40,20 +40,32 @@ On a `v*` tag, GitHub Actions:
    longer matches upstream.
 2. Generates a CycloneDX SBOM per image with `syft` (uploaded as release assets,
    not committed — see `.gitignore`).
-3. Signs `setup.sh` and every SBOM with **keyless cosign** (Sigstore, via the
-   workflow's OIDC `id-token`).
+3. Signs `setup.sh` and **every SBOM** with **keyless cosign** (Sigstore, via the
+   workflow's OIDC `id-token`), emitting one self-contained `*.cosign.bundle`
+   per artifact (certificate + signature + Rekor entry in a single file).
 4. Attaches **SLSA build provenance** via `actions/attest-build-provenance`.
-5. Publishes the GitHub release with the signed artifacts.
+5. Publishes the release with each artifact **and** its `.cosign.bundle`.
 
 ### Verifying a release (for users)
 
+Each artifact ships with a `<name>.cosign.bundle`. Verify the installer (and any
+SBOM) like so, pinning the expected tag in the identity:
+
 ```bash
 cosign verify-blob setup.sh \
-  --certificate setup.sh.pem --signature setup.sh.sig \
-  --certificate-identity-regexp '^https://github.com/.*/\.github/workflows/release\.yml@.*' \
+  --bundle setup.sh.cosign.bundle --new-bundle-format \
+  --certificate-identity "https://github.com/obelisk-complex/Matrix_Setup/.github/workflows/release.yml@refs/tags/v0.1.1" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
-gh attestation verify setup.sh --owner <org>
+
+# An SBOM (same bundle pattern):
+cosign verify-blob POSTGRES_IMAGE.cdx.json \
+  --bundle POSTGRES_IMAGE.cdx.json.cosign.bundle --new-bundle-format \
+  --certificate-identity "https://github.com/obelisk-complex/Matrix_Setup/.github/workflows/release.yml@refs/tags/v0.1.1" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+SLSA build provenance can additionally be verified with
+`cosign verify-blob-attestation <file> --type slsaprovenance1 --bundle <bundle-from-attestations-API>`.
 
 ## Registry trust note
 

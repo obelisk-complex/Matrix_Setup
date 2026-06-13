@@ -4,7 +4,7 @@
 # shellcheck disable=SC2034
 set -euo pipefail
 
-readonly MATRIX_SETUP_VERSION="0.1.0"
+readonly MATRIX_SETUP_VERSION="0.1.1"
 readonly MATRIX_SETUP_STATE_FILE=".matrix-setup.state"
 readonly MATRIX_SETUP_MANIFEST_FILE=".rollback-manifest"
 

@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-06-13
+
+### Fixed
+
+- Release workflow now publishes a self-contained Sigstore bundle
+  (`<artifact>.cosign.bundle`) for the installer **and all 17 SBOMs**. v0.1.0
+  signed the SBOMs but never uploaded their signatures, leaving them
+  unverifiable; verification now uses a single `--bundle` file per artifact
+  (no separate `.sig`/`.pem`).
+
+### Changed
+
+- CI/release: `actions/checkout` bumped to v6.0.3 (Node 24 runtime), clearing
+  the Node.js 20 deprecation warning on GitHub Actions runners.
+
 ## [0.1.0] - 2026-06-13
 
 Security, portability and supply-chain hardening release. Builds on the initial
