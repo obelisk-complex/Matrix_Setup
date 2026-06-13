@@ -112,20 +112,36 @@ _install_compose() {
     case "$OS_FAMILY" in
         debian)
             apt-get install -y -qq podman-compose 2>/dev/null || \
-                pip3 install podman-compose 2>/dev/null || true
+                _pip_install_compose || true
             ;;
         rhel)
             dnf install -y podman-compose 2>/dev/null || \
-                pip3 install podman-compose 2>/dev/null || true
+                _pip_install_compose || true
             ;;
         arch)
             pacman -S --noconfirm podman-compose 2>/dev/null || true
             ;;
         suse)
             zypper install -y podman-compose 2>/dev/null || \
-                pip3 install podman-compose 2>/dev/null || true
+                _pip_install_compose || true
             ;;
     esac
+}
+
+# pip3 fallback for podman-compose. Checks that pip3 and a modern enough Python
+# are present (so the failure mode is a clear message, not a swallowed
+# "pip3: command not found"), and pins the version for reproducibility instead
+# of pulling whatever is latest on PyPI at install time.
+_pip_install_compose() {
+    if ! check_command pip3; then
+        log_warn "pip3 not available; install 'python3-pip' to use the pip fallback for podman-compose."
+        return 1
+    fi
+    if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null; then
+        log_warn "Python >= 3.8 required for podman-compose; skipping pip fallback."
+        return 1
+    fi
+    pip3 install "podman-compose==1.3.0"
 }
 
 _check_tools() {

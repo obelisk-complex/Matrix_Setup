@@ -74,8 +74,9 @@ no-cli
 no-tlsv1
 no-tlsv1_1
 
-# Disable UDP self (prevent amplification)
-no-udp-relay
+# NOTE: 'no-udp-relay' is intentionally NOT set. It would disable UDP media
+# relay entirely and break WebRTC voice/video (Coturn's core purpose). The SSRF
+# vector (CVE-2026-27624) is already mitigated by the denied-peer-ip rules above.
 
 # --- Rate limiting ---
 # Per-user bandwidth limit (bytes/sec) — 10 Mbps

@@ -141,13 +141,12 @@ wizard_step_homeserver() {
         "Synapse — full-featured, most bridges and tools supported" \
         "Dendrite — lightweight, less mature${recommendation}")
 
-    if [[ "$choice" == "1" ]]; then
-        CONFIG[homeserver.type]="dendrite"
-        log_substep "Selected: Dendrite"
-    else
-        CONFIG[homeserver.type]="synapse"
-        log_substep "Selected: Synapse"
-    fi
+    # prompt_select returns a 0-based index; match the same case convention used
+    # by the other wizard steps rather than a fragile string comparison.
+    case "$choice" in
+        1)  CONFIG[homeserver.type]="dendrite"; log_substep "Selected: Dendrite" ;;
+        *)  CONFIG[homeserver.type]="synapse";  log_substep "Selected: Synapse" ;;
+    esac
 }
 
 # --- Step 4: Federation ---

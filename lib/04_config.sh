@@ -118,6 +118,101 @@ config_validate() {
         errors=$((errors + 1))
     fi
 
+    # --- Identifier / format validation ---
+    # These values flow into shell, SQL, JSON and arithmetic sinks elsewhere in
+    # the codebase. Strict validation here is the primary defence against
+    # injection; consumers add defence-in-depth (getent/json.dumps/quoting).
+    local key val
+
+    # matrix_user: must be a valid Unix username (resolved via getent, used in
+    # file ownership and paths).
+    val="${CONFIG[matrix_user]:-}"
+    if [[ -n "$val" && ! "$val" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+        log_error "Config: matrix_user '$val' is not a valid Unix username (^[a-z_][a-z0-9_-]{0,31}\$)"
+        errors=$((errors + 1))
+    fi
+
+    # install_dir: absolute path, no shell metacharacters, whitespace or traversal.
+    val="${CONFIG[install_dir]:-}"
+    if [[ -n "$val" ]]; then
+        if [[ "$val" != /* ]]; then
+            log_error "Config: install_dir must be an absolute path, got '$val'"
+            errors=$((errors + 1))
+        elif [[ "$val" == *..* || "$val" =~ [[:space:]\;\|\&\$\`\(\)\<\>\*\?\\\"\'] ]]; then
+            log_error "Config: install_dir '$val' contains unsafe characters"
+            errors=$((errors + 1))
+        fi
+    fi
+
+    # Ports: integer in 1-65535. Regex-check BEFORE any arithmetic so a value
+    # like 'x[$(cmd)]' can never reach (( )) evaluation.
+    for key in coturn.min_port coturn.max_port smtp.port; do
+        val="${CONFIG[$key]:-}"
+        [[ -z "$val" ]] && continue
+        if [[ ! "$val" =~ ^[0-9]+$ ]]; then
+            log_error "Config: $key must be a positive integer, got '$val'"
+            errors=$((errors + 1))
+        elif (( 10#$val < 1 || 10#$val > 65535 )); then
+            log_error "Config: $key must be in range 1-65535, got '$val'"
+            errors=$((errors + 1))
+        fi
+    done
+    if [[ "${CONFIG[coturn.min_port]:-}" =~ ^[0-9]+$ && "${CONFIG[coturn.max_port]:-}" =~ ^[0-9]+$ ]] \
+        && (( 10#${CONFIG[coturn.min_port]} >= 10#${CONFIG[coturn.max_port]} )); then
+        log_error "Config: coturn.min_port must be less than coturn.max_port"
+        errors=$((errors + 1))
+    fi
+
+    # database.user / database.name: SQL identifier-safe (prevents SQL injection
+    # in psql role/database creation).
+    for key in database.user database.name; do
+        val="${CONFIG[$key]:-}"
+        if [[ -n "$val" && ! "$val" =~ ^[a-zA-Z_][a-zA-Z0-9_]{0,62}$ ]]; then
+            log_error "Config: $key '$val' must match ^[a-zA-Z_][a-zA-Z0-9_]{0,62}\$"
+            errors=$((errors + 1))
+        fi
+    done
+
+    # media_retention.days: integer (prevents bash arithmetic command injection
+    # in the generated cleanup script).
+    val="${CONFIG[media_retention.days]:-}"
+    if [[ -n "$val" && ! "$val" =~ ^[0-9]+$ ]]; then
+        log_error "Config: media_retention.days must be a non-negative integer, got '$val'"
+        errors=$((errors + 1))
+    fi
+
+    # admin.username: Matrix localpart rules (prevents JSON injection in the
+    # registration request body).
+    val="${CONFIG[admin.username]:-}"
+    if [[ -n "$val" && ! "$val" =~ ^[a-z0-9._=/-]+$ ]]; then
+        log_error "Config: admin.username '$val' contains characters invalid for a Matrix localpart (^[a-z0-9._=/-]+\$)"
+        errors=$((errors + 1))
+    fi
+
+    # admin.password: reject known placeholder/default values so a copy-pasted
+    # example config cannot ship a publicly-known admin password.
+    case "${CONFIG[admin.password]:-}" in
+        "") ;;
+        changeme*|password|admin|administrator|12345678|matrix)
+            log_error "Config: admin.password must not be a default/placeholder value"
+            errors=$((errors + 1)) ;;
+    esac
+
+    # bridges.enabled: each entry must be a safe bridge name (prevents path
+    # traversal / arbitrary 'source' in lib/16_bridges.sh).
+    if [[ -n "${CONFIG[bridges.enabled]:-}" ]]; then
+        local _b _bridges
+        IFS=',' read -ra _bridges <<< "${CONFIG[bridges.enabled]}"
+        for _b in "${_bridges[@]}"; do
+            _b="${_b// /}"
+            [[ -z "$_b" ]] && continue
+            if [[ ! "$_b" =~ ^[a-z][a-z0-9_]*$ ]]; then
+                log_error "Config: bridges.enabled contains invalid bridge name '$_b'"
+                errors=$((errors + 1))
+            fi
+        done
+    fi
+
     (( errors == 0 ))
 }
 
@@ -145,7 +240,7 @@ config_save_state() {
     {
         echo "# Matrix Setup State - do not edit"
         echo "version=$MATRIX_SETUP_VERSION"
-        echo "timestamp=$(date -Iseconds)"
+        echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         for key in $(echo "${!CONFIG[@]}" | tr ' ' '\n' | sort); do
             # Don't persist passwords/secrets in state
             case "$key" in

@@ -3,6 +3,16 @@
 # Detects existing installation, offers upgrade options.
 set -euo pipefail
 
+# Extract the PostgreSQL major version from an image ref. Portable (no GNU
+# grep -P) and digest-aware: drops any @sha256 suffix, takes the tag after the
+# last colon, then its leading digits. A digest-only / non-numeric tag yields
+# empty so the caller can skip the major-version guard gracefully.
+_pg_major_from_image() {
+    local ref="${1%%@*}"
+    local tag="${ref##*:}"
+    printf '%s' "${tag%%[!0-9]*}"
+}
+
 upgrade_check() {
     local install_dir="${CONFIG[install_dir]:-$DEFAULT_INSTALL_DIR}"
     local state_file="$install_dir/$MATRIX_SETUP_STATE_FILE"
@@ -74,7 +84,7 @@ upgrade_pull_images() {
 
     if [[ -n "$current_pg_major" ]]; then
         local new_pg_major
-        new_pg_major=$(echo "$POSTGRES_IMAGE" | grep -oP ':\K[0-9]+')
+        new_pg_major=$(_pg_major_from_image "$POSTGRES_IMAGE")
         if [[ -n "$new_pg_major" && "$new_pg_major" != "$current_pg_major" ]]; then
             log_error "PostgreSQL major version change detected: $current_pg_major -> $new_pg_major"
             log_error "Major version upgrades require explicit migration (pg_upgrade or dump/restore)."

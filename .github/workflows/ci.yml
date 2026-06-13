@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: ShellCheck (severity=warning)
+        run: |
+          mapfile -t files < <(find . -type f -name '*.sh' -not -path './.git/*')
+          shellcheck --severity=warning -x "${files[@]}"
+
+      - name: Run test suite
+        run: bash tests/test_runner.sh

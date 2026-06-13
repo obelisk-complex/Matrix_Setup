@@ -79,7 +79,7 @@ _setup_linger() {
 _setup_xdg_dirs() {
     local user="$1"
     local home
-    home=$(eval echo "~$user")
+    home=$(get_user_home "$user")
 
     # Ensure required directories exist
     local dirs=(
@@ -106,7 +106,7 @@ _setup_podman_dns() {
     fi
 
     local home
-    home=$(eval echo "~$user")
+    home=$(get_user_home "$user")
     local conf_file="$home/.config/containers/containers.conf"
 
     if [[ -f "$conf_file" ]] && grep -q "dns_servers" "$conf_file"; then

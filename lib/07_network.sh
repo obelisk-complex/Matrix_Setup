@@ -102,14 +102,18 @@ network_check_ports() {
     PORT_443_PROCESS=""
 
     local line
+    # Portable extraction of the process name from ss output
+    # (users:(("nginx",pid=...))) — avoids GNU `grep -oP \K`.
     line=$(ss -tlnp 'sport = :80' 2>/dev/null | tail -1)
     if [[ -n "$line" && "$line" != *"State"* ]]; then
-        PORT_80_PROCESS=$(echo "$line" | grep -oP 'users:\(\("\K[^"]+' || echo "unknown")
+        PORT_80_PROCESS=$(echo "$line" | sed -n 's/.*users:(("\([^"]*\)".*/\1/p')
+        [[ -n "$PORT_80_PROCESS" ]] || PORT_80_PROCESS="unknown"
     fi
 
     line=$(ss -tlnp 'sport = :443' 2>/dev/null | tail -1)
     if [[ -n "$line" && "$line" != *"State"* ]]; then
-        PORT_443_PROCESS=$(echo "$line" | grep -oP 'users:\(\("\K[^"]+' || echo "unknown")
+        PORT_443_PROCESS=$(echo "$line" | sed -n 's/.*users:(("\([^"]*\)".*/\1/p')
+        [[ -n "$PORT_443_PROCESS" ]] || PORT_443_PROCESS="unknown"
     fi
 
     [[ -z "$PORT_80_PROCESS" && -z "$PORT_443_PROCESS" ]]

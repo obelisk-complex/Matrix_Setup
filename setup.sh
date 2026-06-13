@@ -16,6 +16,16 @@
 # shellcheck disable=SC2154
 set -Eeuo pipefail
 
+# --- Require bash >= 4.3 ---
+# The library modules use namerefs (local -n), associative arrays (declare -gA)
+# and case-fold expansion (${var,,}), all of which need bash 4.3+. Fail early
+# with a clear message rather than a cryptic syntax error mid-install.
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3) )); then
+    echo "Error: bash >= 4.3 is required (found ${BASH_VERSION:-unknown})." >&2
+    echo "Install a newer bash and re-run: sudo bash setup.sh ..." >&2
+    exit 1
+fi
+
 # --- Resolve script directory ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export SCRIPT_DIR
@@ -59,9 +69,17 @@ trap_handler() {
         log_error "Setup failed at line $line_no: $command (exit code: $exit_code)"
         log_error ""
 
-        if [[ -f "${CONFIG[install_dir]:-$DEFAULT_INSTALL_DIR}/$MATRIX_SETUP_MANIFEST_FILE" ]]; then
-            log_warn "A rollback manifest exists. You can undo changes with:"
-            log_warn "  sudo bash $0 --rollback"
+        local manifest="${CONFIG[install_dir]:-$DEFAULT_INSTALL_DIR}/$MATRIX_SETUP_MANIFEST_FILE"
+        if [[ -f "$manifest" ]]; then
+            # Don't leave the box half-configured. Interactively offer to undo;
+            # in headless mode print the exact manual recovery command.
+            if [[ "${HEADLESS:-false}" != "true" ]] && \
+               confirm_prompt "Roll back the changes made so far?" "y"; then
+                rollback_execute_all && log_info "Rollback completed."
+            else
+                log_warn "A rollback manifest exists. You can undo changes with:"
+                log_warn "  sudo bash $0 --rollback"
+            fi
         fi
 
         log_error "Check the output above for details."

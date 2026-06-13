@@ -18,10 +18,38 @@ harden_all() {
     log_success "Server hardening complete"
 }
 
+# Return 0 if any SSH public key is installed for root or any /home user.
+_ssh_has_authorized_key() {
+    local f
+    shopt -s nullglob
+    local files=(/root/.ssh/authorized_keys /root/.ssh/authorized_keys2 \
+                 /home/*/.ssh/authorized_keys /home/*/.ssh/authorized_keys2)
+    for f in "${files[@]}"; do
+        [[ -s "$f" ]] || continue
+        # A non-blank, non-comment line indicates a configured key.
+        if grep -qE '^[[:space:]]*[^#[:space:]]' "$f" 2>/dev/null; then
+            shopt -u nullglob
+            return 0
+        fi
+    done
+    shopt -u nullglob
+    return 1
+}
+
 harden_ssh() {
     log_substep "Hardening SSH"
     local ssh_dir="/etc/ssh/sshd_config.d"
     local ssh_conf="$ssh_dir/99-matrix-hardening.conf"
+
+    # Refuse to disable password auth / root login unless an SSH public key is
+    # actually installed. On a fresh password-only box this lockdown would
+    # otherwise lock the only operator out with no recovery path.
+    if ! _ssh_has_authorized_key; then
+        log_warn "No SSH authorized_keys found for root or any /home user."
+        log_warn "Skipping SSH password/root-login lockdown to avoid locking you out."
+        log_warn "Install an SSH key, then set 'PasswordAuthentication no' manually or re-run."
+        return 0
+    fi
 
     mkdir -p "$ssh_dir"
     rollback_snapshot_file "$CURRENT_PHASE" "$ssh_conf"
@@ -63,8 +91,12 @@ harden_firewall() {
 }
 
 _harden_ufw() {
-    # Enable if not already
-    ufw --force enable 2>/dev/null || true
+    # Enable if not already. A failure here must be surfaced, not swallowed —
+    # otherwise we report "configured" while the firewall is actually inactive.
+    if ! ufw --force enable >/dev/null 2>&1; then
+        log_error "Failed to enable UFW; firewall is NOT active."
+        return 1
+    fi
 
     local ports=("22/tcp" "80/tcp" "443/tcp" "${PORT_STUN}/tcp" "${PORT_STUN}/udp" \
                  "${PORT_STUN_TLS}/tcp" "${PORT_STUN_TLS}/udp")
@@ -82,12 +114,18 @@ _harden_ufw() {
         rollback_snapshot "$CURRENT_PHASE" "FIREWALL_RULE" "ufw|allow $port"
     done
 
-    ufw reload 2>/dev/null || true
-    log_substep "UFW configured"
+    if ! ufw reload >/dev/null 2>&1; then
+        log_error "Failed to reload UFW; rules may not be active."
+        return 1
+    fi
+    log_substep "UFW configured and active"
 }
 
 _harden_firewalld() {
-    systemctl enable --now firewalld 2>/dev/null || true
+    if ! systemctl enable --now firewalld >/dev/null 2>&1; then
+        log_error "Failed to enable firewalld; firewall is NOT active."
+        return 1
+    fi
 
     local ports=("22/tcp" "80/tcp" "443/tcp" "${PORT_STUN}/tcp" "${PORT_STUN}/udp" \
                  "${PORT_STUN_TLS}/tcp" "${PORT_STUN_TLS}/udp")
@@ -99,12 +137,19 @@ _harden_firewalld() {
     ports+=("${CONFIG[coturn.min_port]:-$PORT_COTURN_MIN}-${CONFIG[coturn.max_port]:-$PORT_COTURN_MAX}/udp")
 
     for port in "${ports[@]}"; do
-        firewall-cmd --permanent --add-port="$port" 2>/dev/null || true
+        if ! firewall-cmd --permanent --add-port="$port" >/dev/null 2>&1; then
+            log_error "Failed to add firewall port $port"
+            return 1
+        fi
         rollback_snapshot "$CURRENT_PHASE" "FIREWALL_RULE" "firewalld|$port"
     done
 
-    firewall-cmd --reload 2>/dev/null || true
-    log_substep "firewalld configured"
+    # Without a successful reload, --permanent rules are staged but NOT active.
+    if ! firewall-cmd --reload >/dev/null 2>&1; then
+        log_error "Failed to reload firewalld; permanent rules are not active."
+        return 1
+    fi
+    log_substep "firewalld configured and active"
 }
 
 _harden_nftables() {
@@ -132,7 +177,21 @@ fi)
 }
 NFT
     rollback_snapshot "$CURRENT_PHASE" "FILE_CREATED" "$nft_file"
-    log_warn "nftables rules written to $nft_file (apply manually: nft -f $nft_file)"
+
+    # Actually apply the ruleset. Previously this only wrote the file and
+    # returned success, leaving hosts without ufw/firewalld with NO firewall at
+    # all (silent fail-open of a security control the operator requested).
+    if ! nft -f "$nft_file"; then
+        log_error "Failed to apply nftables rules from $nft_file; firewall is NOT active."
+        return 1
+    fi
+
+    # Persist across reboots where the distro nftables service includes this dir.
+    if [[ -d /etc/nftables.d ]]; then
+        cp "$nft_file" /etc/nftables.d/matrix.conf 2>/dev/null || true
+    fi
+    systemctl enable nftables >/dev/null 2>&1 || true
+    log_substep "nftables rules applied from $nft_file"
 }
 
 harden_fail2ban() {

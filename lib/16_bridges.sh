@@ -91,6 +91,18 @@ _bridge_setup_single() {
     local bridge_dir="${SCRIPT_DIR}/bridges"
     local plugin="$bridge_dir/${bridge_name}.sh"
 
+    # Defence-in-depth against path traversal / arbitrary `source`: the name
+    # must match a strict pattern AND be a plugin actually discovered in
+    # bridges/. config_validate also rejects malformed names up front.
+    if [[ ! "$bridge_name" =~ ^[a-z][a-z0-9_]*$ ]]; then
+        log_warn "Ignoring invalid bridge name: '$bridge_name'"
+        return 0
+    fi
+    if [[ -z "${BRIDGE_NAMES[$bridge_name]:-}" ]]; then
+        log_warn "Unknown bridge '$bridge_name' (not a discovered plugin), skipping"
+        return 0
+    fi
+
     if [[ ! -f "$plugin" ]]; then
         log_warn "Bridge plugin not found: $bridge_name"
         return 0

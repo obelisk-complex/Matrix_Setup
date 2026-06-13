@@ -73,7 +73,9 @@ detect_ram() {
 
 detect_disk() {
     local target="${1:-/}"
-    DISK_FREE_GB=$(df -BG "$target" 2>/dev/null | awk 'NR==2 {print $4}' | tr -d 'G')
+    # df -k (POSIX, integer kilobytes) avoids GNU -BG and decimal output like
+    # "15.0G" that would break the integer arithmetic in _check_system_resources.
+    DISK_FREE_GB=$(df -k "$target" 2>/dev/null | awk 'NR==2 {printf "%d", $4/1024/1024}')
     DISK_FREE_GB="${DISK_FREE_GB:-0}"
     log_debug "Disk free: ${DISK_FREE_GB}GB on $target"
 }
@@ -129,7 +131,9 @@ detect_ipv6() {
 }
 
 detect_resolved() {
-    if systemctl is-active systemd-resolved &>/dev/null; then
+    # Guard systemctl so non-systemd hosts fail later with the clear message in
+    # _check_init_system rather than a cryptic "systemctl: not found" here.
+    if check_command systemctl && systemctl is-active systemd-resolved &>/dev/null; then
         RESOLVED_ACTIVE="true"
         # Extract upstream DNS servers
         if check_command resolvectl; then
@@ -143,9 +147,14 @@ detect_resolved() {
 }
 
 detect_public_ip() {
-    PUBLIC_IPV4=$(curl -4 -sf --connect-timeout 5 https://ifconfig.me 2>/dev/null || echo "")
+    # Validate the third-party response against an IP shape before trusting it,
+    # so an error page / MITM body cannot inject an arbitrary string downstream.
+    local ip
+    ip=$(curl -4 -sf --connect-timeout 5 https://ifconfig.me 2>/dev/null || echo "")
+    [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] && PUBLIC_IPV4="$ip"
     if [[ "$HAS_IPV6" == "true" ]]; then
-        PUBLIC_IPV6=$(curl -6 -sf --connect-timeout 5 https://ifconfig.me 2>/dev/null || echo "")
+        ip=$(curl -6 -sf --connect-timeout 5 https://ifconfig.me 2>/dev/null || echo "")
+        [[ "$ip" =~ ^[0-9a-fA-F:]+$ ]] && PUBLIC_IPV6="$ip"
     fi
     log_debug "Public IP: v4=$PUBLIC_IPV4 v6=$PUBLIC_IPV6"
 }
@@ -180,7 +189,10 @@ detect_existing_install() {
     local install_dir="${CONFIG[install_dir]:-$DEFAULT_INSTALL_DIR}"
     if [[ -f "$install_dir/$MATRIX_SETUP_STATE_FILE" ]]; then
         EXISTING_INSTALL="true"
-        EXISTING_VERSION=$(grep -oP 'version=\K.*' "$install_dir/$MATRIX_SETUP_STATE_FILE" 2>/dev/null || echo "unknown")
+        # Portable parse (avoids GNU `grep -oP \K`, which breaks on BusyBox grep).
+        EXISTING_VERSION=$(awk -F= '/^version=/{print $2; exit}' \
+            "$install_dir/$MATRIX_SETUP_STATE_FILE" 2>/dev/null)
+        [[ -n "$EXISTING_VERSION" ]] || EXISTING_VERSION="unknown"
     fi
     log_debug "Existing install: $EXISTING_INSTALL (v$EXISTING_VERSION)"
 }

@@ -276,6 +276,20 @@ run_as_user() {
     sudo -u "$matrix_user" -- "$@"
 }
 
+# --- Resolve a user's home directory (no eval) ---
+# Uses getent so a username containing shell metacharacters can never be
+# evaluated. Returns non-zero (and logs) if the user has no resolvable home.
+get_user_home() {
+    local user="$1"
+    local home
+    home=$(getent passwd "$user" 2>/dev/null | cut -d: -f6)
+    if [[ -z "$home" ]]; then
+        log_error "Cannot resolve home directory for user '$user'"
+        return 1
+    fi
+    printf '%s\n' "$home"
+}
+
 # --- Check command exists ---
 check_command() {
     command -v "$1" &>/dev/null
@@ -290,14 +304,16 @@ validate_regex() {
 
 # --- Create temp file/dir safely ---
 make_temp_file() {
-    mktemp /tmp/matrix-setup.XXXXXXXXXX
+    mktemp "${TMPDIR:-/tmp}/matrix-setup.XXXXXXXXXX"
 }
 
 make_temp_dir() {
-    mktemp -d /tmp/matrix-setup.XXXXXXXXXX
+    mktemp -d "${TMPDIR:-/tmp}/matrix-setup.XXXXXXXXXX"
 }
 
 # --- Version comparison (returns 0 if $1 >= $2) ---
+# NOTE: relies on GNU coreutils `sort -V` (present on all supported Linux
+# distros; not available on BusyBox/macOS sort).
 version_gte() {
     local v1="$1" v2="$2"
     [[ "$(printf '%s\n%s' "$v1" "$v2" | sort -V | head -n1)" == "$v2" ]]

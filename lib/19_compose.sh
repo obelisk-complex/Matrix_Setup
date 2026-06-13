@@ -87,7 +87,12 @@ compose_assemble() {
         done
     fi
 
-    echo "$merged" > "$compose_file"
+    # The assembled compose file can contain the Cloudflare API token and DB
+    # connection details. Create it with a restrictive umask (no world-readable
+    # window), then lock to 0600 owned by the service user that runs compose.
+    ( umask 077; printf '%s\n' "$merged" > "$compose_file" )
+    chmod 600 "$compose_file"
+    chown "${CONFIG[matrix_user]:-$DEFAULT_MATRIX_USER}:" "$compose_file" 2>/dev/null || true
     rollback_snapshot "compose" "FILE_CREATED" "$compose_file"
 
     # Validate compose file

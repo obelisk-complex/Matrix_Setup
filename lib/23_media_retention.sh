@@ -9,7 +9,7 @@ media_retention_setup() {
     local install_dir="${CONFIG[install_dir]:-$DEFAULT_INSTALL_DIR}"
     local matrix_user="${CONFIG[matrix_user]:-$DEFAULT_MATRIX_USER}"
     local user_home
-    user_home=$(eval echo "~${matrix_user}")
+    user_home=$(get_user_home "$matrix_user")
     local timer_dir="${user_home}/.config/systemd/user"
     local retention_days="${CONFIG[media_retention.days]:-$DEFAULT_MEDIA_RETENTION_DAYS}"
 
@@ -23,10 +23,10 @@ set -euo pipefail
 
 ADMIN_TOKEN="\$(cat ${install_dir}/.admin-token 2>/dev/null || true)"
 DOMAIN="${CONFIG[domain.name]}"
-RETENTION_MS=$((${retention_days} * 86400 * 1000))
+RETENTION_MS=\$(( ${retention_days} * 86400 * 1000 ))
 BEFORE_TS=\$(( (\$(date +%s) - ${retention_days} * 86400) * 1000 ))
 
-log() { printf '[%s] %s\n' "\$(date -Iseconds)" "\$*"; }
+log() { printf '[%s] %s\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" "\$*"; }
 
 # Purge remote media cache
 log "Purging remote media older than ${retention_days} days..."

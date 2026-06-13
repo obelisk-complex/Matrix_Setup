@@ -215,8 +215,18 @@ homeserver_add_appservice() {
     if [[ "$hs_type" == "synapse" ]]; then
         # Append to app_service_config_files list in homeserver.yaml
         if grep -q "^app_service_config_files:" "$hs_config"; then
-            # Add to existing list
-            sed -i "/^app_service_config_files:/a\\  - \"$registration_file\"" "$hs_config"
+            # Insert into the existing list immediately after the key line.
+            # Use awk + ENVIRON (not `sed -i`/`a\`, which are GNU-specific and
+            # mangle some characters) so the path is inserted literally and
+            # portably, and the file's permissions/owner are preserved.
+            local tmp
+            tmp=$(make_temp_file)
+            REG_LINE="  - \"$registration_file\"" awk '
+                { print }
+                /^app_service_config_files:/ && !inserted { print ENVIRON["REG_LINE"]; inserted=1 }
+            ' "$hs_config" > "$tmp"
+            cat "$tmp" > "$hs_config"
+            rm -f "$tmp"
         else
             # Create the list
             printf '\napp_service_config_files:\n  - "%s"\n' "$registration_file" >> "$hs_config"

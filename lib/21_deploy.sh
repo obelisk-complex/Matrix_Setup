@@ -89,6 +89,7 @@ _deploy_create_admin() {
     local admin_user="${CONFIG[admin.username]:-admin}"
     local admin_pass="${CONFIG[admin.password]:-}"
     local shared_secret="${CONFIG[secrets.registration_shared_secret]}"
+    local reg_url="http://localhost:${PORT_SYNAPSE}/_synapse/admin/v1/register"
 
     if [[ -z "$admin_pass" ]]; then
         log_warn "No admin password set, skipping admin account creation"
@@ -97,37 +98,70 @@ _deploy_create_admin() {
 
     log_substep "Creating admin account: @${admin_user}:${domain}"
 
-    # Generate HMAC for registration
+    # Retry up to 3 times with linear backoff (spec FR-17): the homeserver may
+    # accept connections slightly before the admin-register endpoint is ready.
+    local attempt
+    for attempt in 1 2 3; do
+        if _deploy_register_admin "$reg_url" "$admin_user" "$admin_pass" "$shared_secret"; then
+            log_substep "Admin account created: @${admin_user}:${domain}"
+            return 0
+        fi
+        if (( attempt < 3 )); then
+            local delay=$(( attempt * 5 ))
+            log_substep "  registration attempt ${attempt} failed, retrying in ${delay}s..."
+            sleep "$delay"
+        fi
+    done
+
+    # Final failure: the account may already exist, or registration is wedged.
+    # Print the exact manual fallback command (spec FR-17) rather than a vague
+    # warning, and never log the raw API response (it can contain tokens).
+    log_warn "Admin registration did not succeed after 3 attempts."
+    log_warn "If the account does not already exist, create it manually with:"
+    log_warn "  podman exec -it matrix-synapse register_new_matrix_user \\"
+    log_warn "    -c /data/homeserver.yaml -u ${admin_user} -a http://localhost:${PORT_SYNAPSE}"
+    return 0
+}
+
+# Perform one registration attempt. Returns 0 only if an account was created.
+# All secret/user values are passed via the ENVIRONMENT to python3 (already a
+# dependency) so neither the registration shared secret nor the admin password
+# ever appears in process argv (/proc/<pid>/cmdline). python3 also computes the
+# HMAC (removing the xxd dependency) and builds the JSON body via json.dumps
+# (preventing JSON injection from values containing quotes/backslashes).
+_deploy_register_admin() {
+    local reg_url="$1" admin_user="$2" admin_pass="$3" shared_secret="$4"
+
     local nonce
-    nonce=$(curl -sf "http://localhost:${PORT_SYNAPSE}/_synapse/admin/v1/register" | \
-        python3 -c "import sys,json; print(json.load(sys.stdin)['nonce'])" 2>/dev/null) || true
+    nonce=$(curl -sf "$reg_url" 2>/dev/null | \
+        python3 -c "import sys,json; print(json.load(sys.stdin)['nonce'])" 2>/dev/null) || return 1
+    [[ -n "$nonce" ]] || return 1
 
-    if [[ -z "$nonce" ]]; then
-        log_warn "Could not get registration nonce — admin account may need manual creation"
-        return 0
-    fi
+    local body
+    body=$(MATRIX_SHARED_SECRET="$shared_secret" \
+           MATRIX_NONCE="$nonce" \
+           MATRIX_ADMIN_USER="$admin_user" \
+           MATRIX_ADMIN_PASS="$admin_pass" \
+           python3 <<'PY'
+import hmac, hashlib, json, os
+secret = os.environ["MATRIX_SHARED_SECRET"].encode()
+nonce  = os.environ["MATRIX_NONCE"]
+user   = os.environ["MATRIX_ADMIN_USER"]
+passwd = os.environ["MATRIX_ADMIN_PASS"]
+msg = b"\x00".join([nonce.encode(), user.encode(), passwd.encode(), b"admin"])
+mac = hmac.new(secret, msg, hashlib.sha1).hexdigest()
+print(json.dumps({"nonce": nonce, "username": user,
+                  "password": passwd, "admin": True, "mac": mac}))
+PY
+    ) || return 1
+    [[ -n "$body" ]] || return 1
 
-    local mac
-    mac=$(printf '%s\x00%s\x00%s\x00admin' "$nonce" "$admin_user" "$admin_pass" | \
-        openssl dgst -sha1 -hmac "$shared_secret" -binary | xxd -p)
-
+    # Send the body via stdin (--data @-) so it is not on argv either.
     local result
-    result=$(curl -sf -X POST "http://localhost:${PORT_SYNAPSE}/_synapse/admin/v1/register" \
-        -H "Content-Type: application/json" \
-        -d "{
-            \"nonce\": \"$nonce\",
-            \"username\": \"$admin_user\",
-            \"password\": \"$admin_pass\",
-            \"admin\": true,
-            \"mac\": \"$mac\"
-        }" 2>/dev/null) || true
+    result=$(printf '%s' "$body" | curl -sf -X POST "$reg_url" \
+        -H "Content-Type: application/json" --data @- 2>/dev/null) || return 1
 
-    if echo "$result" | grep -q "user_id"; then
-        log_substep "Admin account created: @${admin_user}:${domain}"
-    else
-        log_warn "Admin registration may have failed — check if account already exists"
-        log_debug "Response: $result"
-    fi
+    [[ "$result" == *user_id* ]]
 }
 
 _deploy_start_coturn() {
@@ -184,16 +218,22 @@ _deploy_health_checks() {
         fi
     fi
 
-    # 3. TURN STUN binding test
+    # 3. TURN STUN binding test. A skipped test (no turnutils) must NOT count as
+    # a pass — that previously overstated health and hid broken voice/video.
     if [[ "${CONFIG[coturn.enabled]:-true}" == "true" ]]; then
-        checks_total=$((checks_total + 1))
-        if check_command turnutils_uclient && \
-           turnutils_uclient -T -e 127.0.0.1 -p "$PORT_STUN" 127.0.0.1 &>/dev/null; then
-            log_substep "  TURN/STUN: OK"
-            checks_passed=$((checks_passed + 1))
+        if check_command turnutils_uclient; then
+            checks_total=$((checks_total + 1))
+            if turnutils_uclient -T -e 127.0.0.1 -p "$PORT_STUN" 127.0.0.1 &>/dev/null; then
+                log_substep "  TURN/STUN: OK"
+                checks_passed=$((checks_passed + 1))
+                CONFIG[deploy.turn_result]="ok"
+            else
+                log_warn "  TURN/STUN: FAILED"
+                CONFIG[deploy.turn_result]="failed"
+            fi
         else
-            log_substep "  TURN/STUN: skipped (turnutils not available for test)"
-            checks_passed=$((checks_passed + 1))
+            log_substep "  TURN/STUN: skipped (turnutils not installed for test)"
+            CONFIG[deploy.turn_result]="skipped (turnutils not installed)"
         fi
     fi
 

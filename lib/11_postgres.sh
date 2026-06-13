@@ -88,24 +88,30 @@ _postgres_host_setup() {
     local pg_db="${CONFIG[database.name]:-synapse}"
     local pg_pass="${CONFIG[secrets.postgres_password]:-}"
 
+    # database.user / database.name are validated as SQL-identifier-safe in
+    # config_validate, so they are safe to interpolate as identifiers. The
+    # password literal is escaped (SQL doubles single quotes) and ALL SQL is fed
+    # via stdin (heredoc) rather than `psql -c`, so the password never appears in
+    # process argv (/proc/<pid>/cmdline). ON_ERROR_STOP makes failures fatal
+    # instead of being silently swallowed. \gexec runs the conditionally-built
+    # CREATE DATABASE statement (CREATE DATABASE cannot run inside a DO block).
+    local pg_pass_lit="${pg_pass//\'/\'\'}"
+
     # Create user and database if possible
     if check_command sudo && sudo -u postgres psql -c "" 2>/dev/null; then
         log_substep "Creating database user and database..."
 
-        sudo -u postgres psql -c "
-            DO \$\$
-            BEGIN
-                IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '$pg_user') THEN
-                    CREATE ROLE $pg_user LOGIN PASSWORD '$pg_pass';
-                END IF;
-            END
-            \$\$;
-        " 2>/dev/null || true
-
-        sudo -u postgres psql -c "
-            SELECT 'CREATE DATABASE $pg_db OWNER $pg_user ENCODING \"UTF8\" LC_COLLATE \"C\" LC_CTYPE \"C\" TEMPLATE template0'
-            WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$pg_db')
-        " -t | sudo -u postgres psql 2>/dev/null || true
+        sudo -u postgres psql -v ON_ERROR_STOP=1 -q <<SQL
+DO \$\$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '$pg_user') THEN
+        CREATE ROLE $pg_user LOGIN PASSWORD '$pg_pass_lit';
+    END IF;
+END
+\$\$;
+SELECT 'CREATE DATABASE $pg_db OWNER $pg_user ENCODING ''UTF8'' LC_COLLATE ''C'' LC_CTYPE ''C'' TEMPLATE template0'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$pg_db')\gexec
+SQL
 
         log_substep "Database '$pg_db' ready"
     else

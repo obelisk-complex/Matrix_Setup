@@ -27,6 +27,8 @@ policy = "invite-only"  # "closed", "invite-only", "open-email", "open-captcha"
 # --- Admin Account ---
 [admin]
 username = "admin"
+# MUST be changed: placeholder values beginning with "changeme" (and other known
+# defaults) are rejected by config validation. Use a strong, unique password.
 password = "changeme-at-least-8-chars"
 
 # --- Database ---

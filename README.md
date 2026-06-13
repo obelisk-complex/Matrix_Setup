@@ -1,8 +1,25 @@
 # Matrix Setup
 
+**Current release: v0.1.0** · see [CHANGELOG.md](CHANGELOG.md)
+
 A modular Bash script that deploys a complete [Matrix](https://matrix.org) communication stack on any Linux server using Podman Compose.
 
 One command gets you a fully configured, hardened Matrix homeserver with TLS, TURN/STUN, backups, and optional bridges to Telegram, Discord, WhatsApp, Signal, Slack, and IRC.
+
+## Why This Exists
+
+Running your own Matrix server normally means hand-wiring a homeserver, a database, a reverse proxy, TURN/STUN, TLS certificates, federation, backups and server hardening, then keeping all of it patched. That is a lot of moving parts and a lot of documentation to wade through before you send your first message.
+
+The goal of this project is to collapse all of that into a single command, with safe, hardened defaults, so that **anyone with a Linux box and a domain name can run their own Matrix server** without being a Matrix expert. You own the server, you own your conversations, and you are not renting your communications from anyone.
+
+It is built to be approachable without being fragile:
+
+- **Sensible, safe defaults.** Invite-only registration, a locked-down firewall, key-only SSH, optional encrypted backups and pinned, digest-verified container images, all on by default.
+- **Reversible.** Every change is recorded in a rollback manifest, so a failed or unwanted run can be undone, and your data volumes are never auto-deleted.
+- **Reproducible.** A single TOML file can describe the whole deployment for headless, repeatable installs.
+- **Yours to extend.** Bridges are drop-in plugins, and the reverse proxy, web client and homeserver are all your choice.
+
+If you can copy and paste one command, you can host Matrix for yourself, your family, or your community.
 
 ## What You Get
 
@@ -105,7 +122,7 @@ Bridges connect Matrix to other chat platforms. They are only available with Syn
 | WhatsApp  | WhatsApp  | `dock.mau.dev/mautrix/whatsapp:v0.11.3`  |
 | Signal    | Signal    | `dock.mau.dev/mautrix/signal:v0.7.4`     |
 | Slack     | Slack     | `dock.mau.dev/mautrix/slack:v0.1.3`      |
-| IRC       | IRC       | `docker.io/halfshot/heisenbridge:1.15.0`  |
+| IRC       | IRC       | `docker.io/hif1/heisenbridge:1.9.0`      |
 
 ### Writing a Custom Bridge Plugin
 
@@ -214,8 +231,11 @@ cd tests/distro && vagrant up
 - Coturn blocks RFC 1918 relay attacks with explicit `denied-peer-ip` rules
 - SSH hardened to key-only authentication with no root login
 - fail2ban monitors Synapse and Caddy logs
-- Container images pinned to specific versions (no `:latest`)
+- Container images pinned by immutable `@sha256` digest (not just a tag); see [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md)
+- Tagged releases are built in CI with CycloneDX SBOMs, keyless cosign signatures and SLSA build provenance
 - SELinux `:Z` volume labels applied when SELinux is enforcing
+
+User input that flows into shell, SQL, JSON or generated scripts is validated and quoted; see [CHANGELOG.md](CHANGELOG.md) for the hardening history.
 
 ## License
 

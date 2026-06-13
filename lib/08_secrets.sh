@@ -55,9 +55,12 @@ _store_env_file() {
 
     mkdir -p "$install_dir"
 
-    cat > "$env_file" << EOF
+    # Create the secret file with restrictive permissions from the outset
+    # (umask 077 in a subshell) so there is no world-readable window between
+    # creation and the chmod below.
+    ( umask 077; cat > "$env_file" << EOF
 # Matrix Stack Setup - Generated Secrets
-# Created: $(date -Iseconds)
+# Created: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # DO NOT COMMIT THIS FILE TO VERSION CONTROL
 
 # Homeserver secrets
@@ -79,6 +82,7 @@ REDIS_PASSWORD=${CONFIG[secrets.redis_password]}
 # Domain
 MATRIX_DOMAIN=${CONFIG[domain.name]:-}
 EOF
+    )
 
     chmod 600 "$env_file"
     rollback_snapshot "secrets" "FILE_CREATED" "$env_file"
@@ -100,7 +104,17 @@ _store_podman_secrets() {
         local name="${entry%%:*}"
         local value="${entry#*:}"
 
-        echo -n "$value" | run_as_user podman secret create "$name" - 2>/dev/null || true
+        # Idempotent: preserve an existing secret (re-run safety). Any other
+        # failure is fatal rather than silently swallowed — a missing secret
+        # would otherwise surface only as an opaque container start failure.
+        if run_as_user podman secret exists "$name" 2>/dev/null; then
+            log_substep "Podman secret '$name' already exists, preserving"
+            continue
+        fi
+        if ! printf '%s' "$value" | run_as_user podman secret create "$name" - >/dev/null 2>&1; then
+            log_error "Failed to create Podman secret '$name'"
+            return 1
+        fi
         rollback_snapshot "secrets" "SECRET_CREATED" "podman:$name"
     done
 

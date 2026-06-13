@@ -1,0 +1,59 @@
+name: Release
+
+# Tag-triggered release: verify image digests, generate SBOMs, sign artifacts
+# (keyless cosign), attach SLSA build provenance, and publish a GitHub release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write       # create the release
+  id-token: write       # keyless signing + provenance (Sigstore OIDC)
+  attestations: write   # actions/attest-build-provenance
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      # Fail the release if any pinned digest no longer matches upstream.
+      - name: Verify image digests
+        run: bash scripts/pin-digests.sh --check
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
+
+      - name: Generate CycloneDX SBOMs
+        run: bash scripts/gen-sbom.sh
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+
+      - name: Sign installer + SBOMs (keyless)
+        run: |
+          cosign sign-blob --yes setup.sh \
+            --output-signature setup.sh.sig --output-certificate setup.sh.pem
+          for f in sbom/*.cdx.json; do
+            cosign sign-blob --yes "$f" \
+              --output-signature "$f.sig" --output-certificate "$f.pem"
+          done
+
+      - name: Attest build provenance (SLSA)
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: |
+            setup.sh
+            sbom/*.cdx.json
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            setup.sh setup.sh.sig setup.sh.pem \
+            sbom/*.cdx.json \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file CHANGELOG.md
