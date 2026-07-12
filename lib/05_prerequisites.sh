@@ -63,59 +63,147 @@ _check_podman() {
     log_substep "Podman $PODMAN_VERSION"
 }
 
-# Install a package from AUR using specified helper
+# The AUR builds and runs code from a community repository that nobody vetted.
+# We therefore: never build as root (makepkg and yay both refuse anyway), build in a
+# private temp dir, show the user the PKGBUILD, and ask before executing it. In HEADLESS
+# mode we refuse by default: standing up a Matrix server must not silently compile
+# arbitrary third-party build scripts. Set MATRIX_ALLOW_AUR=true to opt in.
+
+# Resolve an unprivileged user to build as. setup.sh runs as root, but makepkg refuses to
+# run as root, so we need the human behind the sudo. Echoes the username, or fails.
+_aur_build_user() {
+    local user="${SUDO_USER:-}"
+    if [[ -z "$user" || "$user" == "root" ]]; then
+        log_error "Cannot build from the AUR: no unprivileged user found."
+        log_error "makepkg refuses to run as root. Re-run this installer with sudo from a"
+        log_error "normal user account, or install the package yourself and re-run."
+        return 1
+    fi
+    echo "$user"
+}
+
+# Drop privileges to run a command as the build user. Prefers runuser (util-linux, always
+# present on Arch); falls back to sudo. Arch installs do not always ship sudo.
+_as_user() {
+    local user="$1"; shift
+    if check_command runuser; then
+        runuser -u "$user" -- "$@"
+    elif check_command sudo; then
+        sudo -u "$user" "$@"
+    else
+        log_error "Neither runuser nor sudo is available; cannot drop privileges to build."
+        return 1
+    fi
+}
+
+# Ask before we compile and install something from the AUR.
+_aur_consent() {
+    local what="$1"
+
+    if [[ "$HEADLESS" == "true" ]]; then
+        if [[ "${MATRIX_ALLOW_AUR:-false}" == "true" ]]; then
+            log_warn "HEADLESS: building '$what' from the AUR (MATRIX_ALLOW_AUR=true)"
+            return 0
+        fi
+        log_error "'$what' is only available from the AUR, which builds unvetted third-party"
+        log_error "code. Refusing in HEADLESS mode. Set MATRIX_ALLOW_AUR=true to permit it,"
+        log_error "or install '$what' yourself before re-running."
+        return 1
+    fi
+
+    confirm_prompt "Build and install '$what' from the AUR? It compiles unvetted third-party code." "n"
+}
+
+# Install a package from the AUR using the given helper. Runs the helper as the
+# unprivileged user; it will escalate via sudo for the pacman step itself.
 _install_aur_package() {
     local package="$1"
     local helper="${2:-yay}"
+    local build_user
 
-    # Check if helper exists, if not try to install it
+    build_user="$(_aur_build_user)" || return 1
+
     if ! check_command "$helper"; then
+        _aur_consent "$helper (AUR helper)" || return 1
         log_info "Installing $helper AUR helper..."
-        if ! _install_aur_helper "$helper"; then
+        if ! _install_aur_helper "$helper" "$build_user"; then
+            log_error "Failed to install AUR helper '$helper'"
             return 1
         fi
     fi
 
-    log_info "Installing $package from AUR..."
-    if "$helper" -S --noconfirm "$package" 2>/dev/null; then
+    _aur_consent "$package" || return 1
+
+    log_info "Installing $package from AUR via $helper..."
+    if _as_user "$build_user" "$helper" -S --needed "$package"; then
         log_substep "$package installed from AUR"
         return 0
     fi
+    log_error "AUR install of '$package' failed"
     return 1
 }
 
-# Install an AUR helper (yay or aura)
+# Bootstrap an AUR helper (yay or aura) from source.
+# Builds as the unprivileged user, installs the built package as root.
 _install_aur_helper() {
     local helper="$1"
-    local tmp_dir="/tmp/aur-helper-$$"
+    local build_user="$2"
+    local tmp_dir pkg
 
     case "$helper" in
-        yay)
-            mkdir -p "$tmp_dir" && cd "$tmp_dir"
-            if git clone --depth 1 https://aur.archlinux.org/yay.git "$tmp_dir" 2>/dev/null; then
-                cd "$tmp_dir" && makepkg -si --noconfirm 2>/dev/null
-                local result=$?
-                cd / && rm -rf "$tmp_dir"
-                return $result
-            fi
-            rm -rf "$tmp_dir"
-            return 1
-            ;;
-        aura)
-            mkdir -p "$tmp_dir" && cd "$tmp_dir"
-            if git clone --depth 1 https://aur.archlinux.org/aura.git "$tmp_dir" 2>/dev/null; then
-                cd "$tmp_dir" && makepkg -si --noconfirm 2>/dev/null
-                local result=$?
-                cd / && rm -rf "$tmp_dir"
-                return $result
-            fi
-            rm -rf "$tmp_dir"
-            return 1
-            ;;
+        yay|aura) ;;
         *)
+            log_error "Unsupported AUR helper: '$helper' (expected yay or aura)"
             return 1
             ;;
     esac
+
+    # mktemp, not a predictable /tmp/...-$$ path: that is a symlink-race target on a
+    # shared machine, and we are about to execute what lands in it.
+    tmp_dir="$(mktemp -d -t "matrix-setup-aur-XXXXXXXX")" || {
+        log_error "Could not create a temporary build directory"
+        return 1
+    }
+    # shellcheck disable=SC2064  # intentional: expand tmp_dir now, not at trap time
+    trap "rm -rf '$tmp_dir'" RETURN
+    chown "$build_user" "$tmp_dir"
+
+    log_info "Cloning $helper from the AUR..."
+    if ! _as_user "$build_user" git clone --depth 1 "https://aur.archlinux.org/${helper}.git" "$tmp_dir/$helper"; then
+        log_error "Failed to clone $helper from the AUR"
+        return 1
+    fi
+
+    # Show what we are about to execute. This is the whole point of the exercise.
+    if [[ "$HEADLESS" != "true" ]]; then
+        log_info "PKGBUILD for $helper (this is the code that will run on your machine):"
+        cat "$tmp_dir/$helper/PKGBUILD"
+        confirm_prompt "Proceed with building $helper from the PKGBUILD above?" "n" || {
+            log_info "Skipped building $helper"
+            return 1
+        }
+    fi
+
+    log_info "Building $helper as '$build_user' (makepkg cannot run as root)..."
+    if ! _as_user "$build_user" bash -c "cd '$tmp_dir/$helper' && makepkg --noconfirm"; then
+        log_error "makepkg failed for $helper"
+        return 1
+    fi
+
+    pkg="$(find "$tmp_dir/$helper" -maxdepth 1 -name '*.pkg.tar.*' -print -quit)"
+    if [[ -z "$pkg" ]]; then
+        log_error "makepkg reported success but produced no package for $helper"
+        return 1
+    fi
+
+    log_info "Installing $helper package..."
+    if ! pacman -U --noconfirm "$pkg"; then
+        log_error "pacman failed to install the built $helper package"
+        return 1
+    fi
+
+    log_substep "$helper installed"
+    return 0
 }
 
 # Auto-enable podman.socket for rootless Podman systemd integration
