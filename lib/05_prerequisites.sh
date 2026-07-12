@@ -57,7 +57,79 @@ _check_podman() {
         log_warn "  Older versions may have networking issues with pasta/slirp4netns."
     fi
 
+    # Enable podman.socket for rootless Podman systemd integration (Quadlet)
+    _enable_podman_socket
+
     log_substep "Podman $PODMAN_VERSION"
+}
+
+# Install a package from AUR using specified helper
+_install_aur_package() {
+    local package="$1"
+    local helper="${2:-yay}"
+
+    # Check if helper exists, if not try to install it
+    if ! check_command "$helper"; then
+        log_info "Installing $helper AUR helper..."
+        if ! _install_aur_helper "$helper"; then
+            return 1
+        fi
+    fi
+
+    log_info "Installing $package from AUR..."
+    if "$helper" -S --noconfirm "$package" 2>/dev/null; then
+        log_substep "$package installed from AUR"
+        return 0
+    fi
+    return 1
+}
+
+# Install an AUR helper (yay or aura)
+_install_aur_helper() {
+    local helper="$1"
+    local tmp_dir="/tmp/aur-helper-$$"
+
+    case "$helper" in
+        yay)
+            mkdir -p "$tmp_dir" && cd "$tmp_dir"
+            if git clone --depth 1 https://aur.archlinux.org/yay.git "$tmp_dir" 2>/dev/null; then
+                cd "$tmp_dir" && makepkg -si --noconfirm 2>/dev/null
+                local result=$?
+                cd / && rm -rf "$tmp_dir"
+                return $result
+            fi
+            rm -rf "$tmp_dir"
+            return 1
+            ;;
+        aura)
+            mkdir -p "$tmp_dir" && cd "$tmp_dir"
+            if git clone --depth 1 https://aur.archlinux.org/aura.git "$tmp_dir" 2>/dev/null; then
+                cd "$tmp_dir" && makepkg -si --noconfirm 2>/dev/null
+                local result=$?
+                cd / && rm -rf "$tmp_dir"
+                return $result
+            fi
+            rm -rf "$tmp_dir"
+            return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Auto-enable podman.socket for rootless Podman systemd integration
+_enable_podman_socket() {
+    if systemctl list-unit-files podman.socket &>/dev/null; then
+        if ! systemctl is-enabled --quiet podman.socket 2>/dev/null; then
+            log_info "Enabling podman.socket for rootless Podman systemd integration..."
+            if systemctl enable --now podman.socket 2>/dev/null; then
+                log_substep "podman.socket enabled"
+            else
+                log_warn "Failed to enable podman.socket (may need manual enable)"
+            fi
+        fi
+    fi
 }
 
 _install_podman() {
@@ -75,7 +147,16 @@ _install_podman() {
             fi
             ;;
         arch)
-            pacman -Sy --noconfirm podman podman-compose fuse-overlayfs slirp4netns
+            pacman -Sy --noconfirm podman fuse-overlayfs slirp4netns
+            # Try official repo first, fall back to AUR for podman-compose
+            if ! pacman -Qq podman-compose &>/dev/null; then
+                if ! _install_aur_package "podman-compose" "yay"; then
+                    log_warn "podman-compose AUR install failed, trying pip3"
+                    pip3 install podman-compose 2>/dev/null || true
+                fi
+            fi
+            # Ensure uidmap for rootless
+            pacman -S --noconfirm --needed shadow 2>/dev/null || true
             ;;
         suse)
             zypper install -y podman podman-compose uidmap slirp4netns
@@ -119,7 +200,12 @@ _install_compose() {
                 _pip_install_compose || true
             ;;
         arch)
-            pacman -S --noconfirm podman-compose 2>/dev/null || true
+            # Try official repo first, then AUR, then pip
+            if ! pacman -S --noconfirm podman-compose 2>/dev/null; then
+                if ! _install_aur_package "podman-compose" "yay"; then
+                    pip3 install podman-compose 2>/dev/null || true
+                fi
+            fi
             ;;
         suse)
             zypper install -y podman-compose 2>/dev/null || \

@@ -152,9 +152,9 @@ Matrix_Setup/
 │   ├── compose/          # Podman Compose fragments
 │   ├── configs/          # Homeserver, Caddy, Coturn templates
 │   ├── snippets/         # Nginx/Apache/Traefik proxy snippets
-│   └── hardening/        # SSH, sysctl, fail2ban templates
+│   └── hardening/        // SSH, sysctl, fail2ban templates
 ├── config/               # Example TOML config
-└── tests/                # Unit and integration tests
+└── tests/                // Unit and integration tests
 ```
 
 ## Existing Reverse Proxy
@@ -199,7 +199,7 @@ stunclient matrix.example.com
 **Bridge not connecting:**
 ```bash
 # Check bridge container logs
-podman --remote logs matrix-bridge-telegram
+podman --remote logs -f matrix-bridge-telegram
 # Verify appservice registration is loaded by Synapse
 ```
 
