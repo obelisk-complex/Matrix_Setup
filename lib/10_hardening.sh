@@ -280,6 +280,9 @@ SYSCTL
 }
 
 harden_mac() {
+    # SELinux/AppArmor hardening only applies when those systems are detected.
+    # On Arch Linux (which typically uses neither), this step is skipped appropriately.
+    # The detection in 02_detect.sh sets SELINUX_MODE and APPARMOR_ACTIVE based on availability.
     if [[ "$SELINUX_MODE" == "enforcing" || "$SELINUX_MODE" == "permissive" ]]; then
         log_substep "SELinux detected ($SELINUX_MODE), configuring booleans"
         setsebool -P container_manage_cgroup on 2>/dev/null || true
