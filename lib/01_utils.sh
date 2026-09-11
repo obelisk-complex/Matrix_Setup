@@ -215,25 +215,55 @@ template_render() {
     local output="$2"
     local -n _vars="$3"
     local content
-    content=$(<"$input")
 
-    # Process conditional blocks
-    local key
-    for key in "${!_vars[@]}"; do
-        if [[ "${_vars[$key]}" == "true" || "${_vars[$key]}" == "1" ]]; then
+    # Read with $(cat …), not the faster $(<"$input"): bash(1) calls them
+    # equivalent under COMMAND SUBSTITUTION, but only for a file that opens. A
+    # failed open on the redirection form exits the shell outright, even from a
+    # call in a `||` list where set -e is otherwise suppressed, so every
+    # caller's `|| { log_error …; return 1; }` was unreachable. A directory
+    # opens and reads as empty, which rendered the template as nothing and
+    # returned success, so -f has to be checked as well as -r.
+    if [[ ! -f "$input" || ! -r "$input" ]]; then
+        log_error "Template '$input': not a readable file"
+        return 1
+    fi
+    content=$(cat -- "$input") || {
+        log_error "Template '$input': failed to read"
+        return 1
+    }
+
+    # Process conditional blocks. The keys come from the template, not from the
+    # vars array: a key the caller never set is falsy, and its block has to go.
+    # Looping over the array instead left such a block's markers in the output.
+    local -a block_keys=()
+    mapfile -t block_keys < <(grep -o '{{#[A-Za-z0-9_]\+}}' <<< "$content" \
+        | sed 's/^{{#//; s/}}$//' | sort -u)
+
+    local key script
+    for key in "${block_keys[@]}"; do
+        if [[ "${_vars[$key]:-}" == "true" || "${_vars[$key]:-}" == "1" ]]; then
             # Keep content between {{#KEY}} and {{/KEY}}, remove markers
-            content=$(echo "$content" | sed "/{{#${key}}}/d; /{{\\/${key}}}/d")
+            script="/{{#${key}}}/d; /{{\\/${key}}}/d"
         else
             # Remove everything between {{#KEY}} and {{/KEY}} inclusive
-            content=$(echo "$content" | sed "/{{#${key}}}/,/{{\\/${key}}}/d")
+            script="/{{#${key}}}/,/{{\\/${key}}}/d"
         fi
+        # A failed sed would leave $content empty; report it rather than
+        # writing an empty file over the caller's output.
+        content=$(echo "$content" | sed "$script") || {
+            log_error "Template '$input': failed to process block {{#${key}}}"
+            return 1
+        }
     done
 
     # Substitute {{VAR}} placeholders
     for key in "${!_vars[@]}"; do
         local escaped_val
         escaped_val=$(printf '%s' "${_vars[$key]}" | sed 's/[&/\|]/\\&/g')
-        content=$(echo "$content" | sed "s|{{${key}}}|${escaped_val}|g")
+        content=$(echo "$content" | sed "s|{{${key}}}|${escaped_val}|g") || {
+            log_error "Template '$input': failed to substitute {{${key}}} (value may contain a newline)"
+            return 1
+        }
     done
 
     echo "$content" > "$output"
@@ -293,13 +323,6 @@ get_user_home() {
 # --- Check command exists ---
 check_command() {
     command -v "$1" &>/dev/null
-}
-
-# --- Validate string against regex ---
-validate_regex() {
-    local value="$1"
-    local pattern="$2"
-    [[ "$value" =~ $pattern ]]
 }
 
 # --- Create temp file/dir safely ---

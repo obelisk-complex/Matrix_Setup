@@ -3,7 +3,7 @@
 # NOTE: Coturn runs rootful with host networking for reliable UDP relay.
 # This is deployed as a SEPARATE compose file / Quadlet unit.
 
-services:
+# @section services
   coturn:
     image: {{COTURN_IMAGE}}
     container_name: matrix-coturn

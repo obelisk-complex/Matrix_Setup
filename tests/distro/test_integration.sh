@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Matrix Stack Setup — Integration Test
-# Run inside a Vagrant VM with Podman installed.
+# Run inside a Vagrant VM after tests/distro/test_install_path.sh has installed
+# the prerequisites through the project's own per-distro package lists.
 # Tests headless mode with a minimal TOML config against localhost.
 set -euo pipefail
 
@@ -49,13 +50,15 @@ fi
 
 # 4. Help flag
 log "Testing --help..."
-if bash "$PROJECT_DIR/setup.sh" --help 2>&1 | grep -q "headless"; then
+help_rc=0
+help_out=$(bash "$PROJECT_DIR/setup.sh" --help 2>&1) || help_rc=$?
+if (( help_rc == 0 )) && grep -q "headless" <<< "$help_out"; then
     pass "--help output"
 else
-    fail "--help output"
+    fail "--help output (exit $help_rc)"
 fi
 
-# 5. Config validation in headless mode (should fail without proper config)
+# 5. Config validation in headless mode (an empty domain must be rejected)
 log "Testing config validation..."
 cat > /tmp/test-invalid.toml << EOF
 [domain]
@@ -63,10 +66,21 @@ name = ""
 confirmed = true
 EOF
 
-if bash "$PROJECT_DIR/setup.sh" --headless --config /tmp/test-invalid.toml 2>&1 | grep -qi "error\|fail"; then
+# Capture the output and the status separately. Piping setup.sh straight into
+# `grep -q` made this check score the *pipeline's* status under `pipefail`:
+# setup.sh correctly exiting non-zero (and being SIGPIPE'd by grep's early
+# close) marked the pipeline as failed, so a healthy run reported FAIL.
+#
+# The assertion is now: setup.sh must exit non-zero AND must say why. The old
+# grep for "error|fail" matched any [ERROR] line, so a setup.sh that died in
+# require_root or detect_all — never reaching validation at all — satisfied it.
+validate_rc=0
+validate_out=$(bash "$PROJECT_DIR/setup.sh" --headless --config /tmp/test-invalid.toml 2>&1) || validate_rc=$?
+if (( validate_rc != 0 )) && grep -q "domain.name is required" <<< "$validate_out"; then
     pass "invalid config rejected"
 else
-    fail "invalid config should have been rejected"
+    fail "invalid config should have been rejected (exit $validate_rc)"
+    printf '%s\n' "$validate_out" | sed 's/^/    | /'
 fi
 
 # 6. Template rendering

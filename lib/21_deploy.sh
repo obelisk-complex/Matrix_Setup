@@ -54,6 +54,29 @@ _deploy_start_services() {
     done
 }
 
+# The container that serves the homeserver, as named by container_name: in
+# templates/compose/<type>.yml. Every deploy-phase request is addressed to it,
+# so a drift between the two names would silently target nothing.
+_deploy_homeserver_container() {
+    case "${CONFIG[homeserver.type]:-synapse}" in
+        dendrite) printf 'matrix-dendrite' ;;
+        *)        printf 'matrix-synapse' ;;
+    esac
+}
+
+# Runs one curl inside the homeserver container. Both homeserver fragments
+# declare `ports: []`: nothing the homeserver serves is published to the host,
+# and Caddy reaches it over matrix-net (dns) or the shared namespace (pod).
+# A host-side probe therefore never connects, in either networking mode.
+# Publishing a port to make one succeed would widen the homeserver's exposure
+# to satisfy a health check, so the request goes to where the service is
+# instead. Both images ship curl: Synapse's Dockerfile installs it for its own
+# HEALTHCHECK, and Dendrite's runtime stage is alpine plus `apk add curl`.
+# -i keeps stdin attached so a caller can pipe a request body in.
+_deploy_hs_curl() {
+    run_as_user podman exec -i "$(_deploy_homeserver_container)" curl -sf "$@"
+}
+
 _deploy_wait_for_homeserver() {
     local domain="$1"
     log_substep "Waiting for homeserver to become ready..."
@@ -66,7 +89,7 @@ _deploy_wait_for_homeserver() {
     local last_log=0
 
     while (( elapsed < timeout )); do
-        if curl -sf "$url" &>/dev/null; then
+        if _deploy_hs_curl "$url" &>/dev/null; then
             log_substep "Homeserver is ready (${elapsed}s)"
             return 0
         fi
@@ -88,8 +111,6 @@ _deploy_create_admin() {
     local domain="$1"
     local admin_user="${CONFIG[admin.username]:-admin}"
     local admin_pass="${CONFIG[admin.password]:-}"
-    local shared_secret="${CONFIG[secrets.registration_shared_secret]}"
-    local reg_url="http://localhost:${PORT_SYNAPSE}/_synapse/admin/v1/register"
 
     if [[ -z "$admin_pass" ]]; then
         log_warn "No admin password set, skipping admin account creation"
@@ -97,6 +118,22 @@ _deploy_create_admin() {
     fi
 
     log_substep "Creating admin account: @${admin_user}:${domain}"
+
+    # The two homeservers are different programs: Synapse is driven over its
+    # admin HTTP API, Dendrite through the create-account binary in its image.
+    if [[ "${CONFIG[homeserver.type]:-synapse}" == "dendrite" ]]; then
+        _deploy_create_admin_dendrite "$domain" "$admin_user" "$admin_pass"
+    else
+        _deploy_create_admin_synapse "$domain" "$admin_user" "$admin_pass"
+    fi
+}
+
+# --- Synapse: shared-secret registration over the admin HTTP API ---
+
+_deploy_create_admin_synapse() {
+    local domain="$1" admin_user="$2" admin_pass="$3"
+    local shared_secret="${CONFIG[secrets.registration_shared_secret]}"
+    local reg_url="http://localhost:${PORT_SYNAPSE}/_synapse/admin/v1/register"
 
     # Retry up to 3 times with linear backoff (spec FR-17): the homeserver may
     # accept connections slightly before the admin-register endpoint is ready.
@@ -133,7 +170,7 @@ _deploy_register_admin() {
     local reg_url="$1" admin_user="$2" admin_pass="$3" shared_secret="$4"
 
     local nonce
-    nonce=$(curl -sf "$reg_url" 2>/dev/null | \
+    nonce=$(_deploy_hs_curl "$reg_url" 2>/dev/null | \
         python3 -c "import sys,json; print(json.load(sys.stdin)['nonce'])" 2>/dev/null) || return 1
     [[ -n "$nonce" ]] || return 1
 
@@ -158,10 +195,74 @@ PY
 
     # Send the body via stdin (--data @-) so it is not on argv either.
     local result
-    result=$(printf '%s' "$body" | curl -sf -X POST "$reg_url" \
+    result=$(printf '%s' "$body" | _deploy_hs_curl -X POST "$reg_url" \
         -H "Content-Type: application/json" --data @- 2>/dev/null) || return 1
 
     [[ "$result" == *user_id* ]]
+}
+
+# --- Dendrite: the create-account utility shipped inside the image ---
+#
+# Dendrite has no host-side registration client to drive. Account creation is
+# /usr/bin/create-account, installed by Dendrite's Dockerfile, which reads
+# client_api.registration_shared_secret from the config it is handed and POSTs
+# to the already-running homeserver on its own localhost. It therefore needs the
+# container up, which is why this runs after _deploy_wait_for_homeserver.
+# Verified against Dendrite v0.14.1: cmd/create-account/main.go, Dockerfile and
+# docs/administration/1_createusers.md.
+_deploy_create_admin_dendrite() {
+    local domain="$1" admin_user="$2" admin_pass="$3"
+
+    # Same linear backoff as the Synapse path: the client API can accept
+    # connections slightly before registration is serviceable.
+    local attempt
+    for attempt in 1 2 3; do
+        if _deploy_dendrite_create_account "$admin_user" "$admin_pass"; then
+            log_substep "Admin account created: @${admin_user}:${domain}"
+            return 0
+        fi
+        if (( attempt < 3 )); then
+            local delay=$(( attempt * 5 ))
+            log_substep "  create-account attempt ${attempt} failed, retrying in ${delay}s..."
+            sleep "$delay"
+        fi
+    done
+
+    log_warn "Admin registration did not succeed after 3 attempts."
+    log_warn "If the account does not already exist, create it manually with:"
+    log_warn "  podman exec -it matrix-dendrite /usr/bin/create-account \\"
+    log_warn "    -config /etc/dendrite/dendrite.yaml -username ${admin_user} -admin"
+    return 0
+}
+
+# Perform one create-account attempt. Returns 0 only if the utility succeeded.
+# The password is written to its stdin (-passwordstdin) rather than passed as
+# -password, so it never appears in /proc/<pid>/cmdline; the registration shared
+# secret is read by create-account from the config file and never leaves the
+# container. On success create-account logs the new account's access token, so
+# its output is never echoed; on failure it is echoed with any credential
+# stripped, because a silent failure here leaves the operator locked out.
+# Container name and config path are fixed by templates/compose/dendrite.yml.
+_deploy_dendrite_create_account() {
+    local admin_user="$1" admin_pass="$2"
+    local out rc=0
+
+    out=$(printf '%s' "$admin_pass" | run_as_user podman exec -i matrix-dendrite \
+        /usr/bin/create-account \
+        -config /etc/dendrite/dendrite.yaml \
+        -username "$admin_user" \
+        -admin \
+        -passwordstdin 2>&1) || rc=$?
+
+    (( rc == 0 )) && return 0
+
+    local redacted="${out//"$admin_pass"/<redacted>}"
+    redacted=$(printf '%s' "$redacted" | sed -E 's/(AccessToken: )[^)"]*/\1<redacted>/g')
+    local line
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && log_warn "  create-account: $line"
+    done <<< "$redacted"
+    return 1
 }
 
 _deploy_start_coturn() {
@@ -200,7 +301,7 @@ _deploy_health_checks() {
 
     # 1. Homeserver client API
     checks_total=$((checks_total + 1))
-    if curl -sf "http://localhost:${PORT_SYNAPSE}/_matrix/client/versions" &>/dev/null; then
+    if _deploy_hs_curl "http://localhost:${PORT_SYNAPSE}/_matrix/client/versions" &>/dev/null; then
         log_substep "  Client API: OK"
         checks_passed=$((checks_passed + 1))
     else
@@ -210,7 +311,7 @@ _deploy_health_checks() {
     # 2. Federation (if enabled)
     if [[ "${CONFIG[federation.enabled]:-true}" == "true" ]]; then
         checks_total=$((checks_total + 1))
-        if curl -sf "http://localhost:${PORT_SYNAPSE}/_matrix/federation/v1/version" &>/dev/null; then
+        if _deploy_hs_curl "http://localhost:${PORT_SYNAPSE}/_matrix/federation/v1/version" &>/dev/null; then
             log_substep "  Federation API: OK"
             checks_passed=$((checks_passed + 1))
         else

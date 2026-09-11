@@ -100,6 +100,47 @@ fail2ban = true
 sysctl = true
 auto_updates = true
 
+# Worth knowing before you enable `sysctl` above: it lowers the threshold for
+# privileged ports to 80, because Caddy runs as an ordinary user and otherwise
+# could not listen on 443 or obtain a TLS certificate. The side effect is that
+# every account on this machine can then bind ports 80-1023 — someone with a
+# shell account here could grab port 80 before Caddy does and take over
+# certificate issuance for your domain.
+# This is fine for one admin running a server for a small group, which is what
+# this setup assumes. Do not hand out shell accounts on the machine that
+# terminates your TLS.
+
+# Every setting below is optional. The values shown are the defaults, and they
+# match what the server does today — leaving this section alone changes nothing.
+
+# Allow SSH port forwarding (tunnelling) to this machine.
+# Leave this true unless you know you never tunnel to this box. Turning it off
+# stops you reaching anything on the server through an SSH tunnel: the admin
+# panel and Grafana if you open them that way, a database client pointed at the
+# Postgres port, or a browser proxied through the server. It does not stop you
+# logging in over SSH, and you can change it back by editing
+# /etc/ssh/sshd_config.d/99-matrix-hardening.conf.
+ssh_tcp_forwarding = true
+
+# Use randomised, rotating IPv6 addresses for connections this server starts.
+# Only turn this on if the server is at home on a connection where the IPv6
+# address reveals something you would rather not publish. On a hosted server it
+# gains you nothing and costs you clarity: outgoing traffic stops coming from
+# the address in your DNS record, so firewall rules or allowlists elsewhere that
+# name this server by its IPv6 address will stop matching it, and this setup
+# script's own "does DNS point at this machine?" check may start warning.
+# Incoming connections are unaffected either way.
+# Has no effect at all if your provider gives you a fixed IPv6 address.
+ipv6_privacy = false
+
+# How many simultaneous network connections the kernel will track.
+# Set this only if voice and video calls start dropping on a busy server — the
+# giveaway is "nf_conntrack: table full" in `dmesg`. Each relayed call is many
+# tracked connections, so a server with a lot of calls can run out while a quiet
+# one never will. Costs a little memory and nothing else. 131072 is a sensible
+# first try; leave it unset to let the kernel decide.
+# conntrack_max = 131072
+
 # --- Secrets ---
 [secrets]
 mode = "env"        # "env" (.env file) or "podman" (Podman native secrets)

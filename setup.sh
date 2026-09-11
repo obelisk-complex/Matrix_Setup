@@ -69,53 +69,34 @@ trap_handler() {
         log_error "Setup failed at line $line_no: $command (exit code: $exit_code)"
         log_error ""
 
-        local manifest="${CONFIG[install_dir]:-$DEFAULT_INSTALL_DIR}/$MATRIX_SETUP_MANIFEST_FILE"
-        if [[ -f "$manifest" ]]; then
-            # Don't leave the box half-configured. Interactively offer to undo;
-            # in headless mode print the exact manual recovery command.
-            if [[ "${HEADLESS:-false}" != "true" ]] && \
-               confirm_prompt "Roll back the changes made so far?" "y"; then
-                rollback_execute_all && log_info "Rollback completed."
-            else
-                log_warn "A rollback manifest exists. You can undo changes with:"
-                log_warn "  sudo bash $0 --rollback"
-            fi
-        fi
+        rollback_on_failure
 
         log_error "Check the output above for details."
     fi
 }
 trap trap_handler ERR
 
-# Ctrl+C handler
-trap_sigint() {
-    echo ""
-    log_warn "Setup interrupted (Ctrl+C)"
-
-    if [[ -f "${CONFIG[install_dir]:-$DEFAULT_INSTALL_DIR}/$MATRIX_SETUP_MANIFEST_FILE" ]]; then
-        if confirm_prompt "Would you like to rollback changes made so far?" "y"; then
-            rollback_execute_all
-            log_info "Rollback completed."
-        fi
-    fi
-
-    exit "$E_USER_ABORT"
-}
-trap trap_sigint SIGINT
+# Ctrl+C handler (lib/25_rollback.sh)
+trap '_on_interrupt' INT TERM
 
 # --- Main flow ---
 main() {
     require_root
 
+    # Load config (TOML or defaults). Must precede rollback mode: the manifest
+    # lives under install_dir, which only the config knows.
+    config_load "$CONFIG_FILE"
+
     # Rollback mode
     if [[ "$DO_ROLLBACK" == "true" ]]; then
-        rollback_execute_all
+        if ! rollback_execute_all; then
+            log_error "Nothing to roll back."
+            exit "$E_ROLLBACK"
+        fi
         log_success "Rollback completed."
+        rollback_cleanup
         exit "$E_OK"
     fi
-
-    # Load config (TOML or defaults)
-    config_load "$CONFIG_FILE"
 
     # Upgrade mode
     if [[ "$DO_UPGRADE" == "true" ]]; then
@@ -186,6 +167,10 @@ main() {
 
     # Save state for future re-runs
     config_save_state
+
+    # Nothing left to undo: retract the manifest so a later crash cannot offer
+    # to roll back this completed install.
+    rollback_cleanup
 
     echo ""
     log_success "Matrix Stack setup complete!"

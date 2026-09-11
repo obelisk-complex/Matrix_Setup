@@ -5,7 +5,9 @@
 server_name: "{{SERVER_NAME}}"
 public_baseurl: "https://{{DOMAIN}}"
 pid_file: "/data/homeserver.pid"
+{{#WEBCLIENT}}
 web_client_location: "https://{{WEBCLIENT_SUBDOMAIN}}.{{DOMAIN}}/"
+{{/WEBCLIENT}}
 serve_server_wellknown: true
 
 # --- Listeners ---

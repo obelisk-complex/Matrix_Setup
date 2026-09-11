@@ -5,14 +5,56 @@
 set -euo pipefail
 
 MANIFEST_FILE=""
+MANIFEST_POINTER=""
 
 # --- Manifest management ---
 
+# The manifest keeps an unpredictable mktemp name so it cannot be pre-created
+# or symlinked by another user. That name is not knowable to a later process,
+# so a fixed-name pointer beside it records the path: the ERR/INT traps and
+# `setup.sh --rollback` have nothing in memory and resolve through it.
 rollback_init_manifest() {
     local install_dir="${CONFIG[install_dir]:-$DEFAULT_INSTALL_DIR}"
     MANIFEST_FILE=$(mktemp "${install_dir}/${MATRIX_SETUP_MANIFEST_FILE}.XXXXXXXXXX" 2>/dev/null || \
-                    mktemp "/tmp/${MATRIX_SETUP_MANIFEST_FILE}.XXXXXXXXXX")
+                    mktemp "${TMPDIR:-/tmp}/${MATRIX_SETUP_MANIFEST_FILE}.XXXXXXXXXX")
+    MANIFEST_POINTER="$(dirname "$MANIFEST_FILE")/${MATRIX_SETUP_MANIFEST_FILE}"
+    _rollback_write_pointer
     log_debug "Rollback manifest: $MANIFEST_FILE"
+}
+
+# Publish the manifest path at the fixed pointer path. Written to a temp file
+# and renamed: a rename replaces whatever sits at the target, so a symlink
+# planted there is destroyed rather than written through.
+_rollback_write_pointer() {
+    local tmp
+    tmp=$(mktemp "${MANIFEST_POINTER}.ptr.XXXXXXXXXX") || return 1
+    printf '%s\n' "$MANIFEST_FILE" > "$tmp"
+    mv -f "$tmp" "$MANIFEST_POINTER"
+}
+
+# Find the manifest for this run, or one left behind by a process that died.
+# Sets MANIFEST_FILE and MANIFEST_POINTER; returns 1 when there is nothing to
+# roll back. This is the guard for setup.sh's traps and for --rollback.
+rollback_resolve_manifest() {
+    if [[ -n "$MANIFEST_FILE" && -f "$MANIFEST_FILE" ]]; then
+        return 0
+    fi
+
+    local dir pointer candidate
+    for dir in "${CONFIG[install_dir]:-$DEFAULT_INSTALL_DIR}" "${TMPDIR:-/tmp}"; do
+        pointer="${dir}/${MATRIX_SETUP_MANIFEST_FILE}"
+        # Rollback deletes files and stops services, so refuse to take the
+        # path from anything another user could have planted: no symlinks, and
+        # the file must be ours (in /tmp the sticky bit makes -O decisive).
+        [[ -f "$pointer" && ! -L "$pointer" && -O "$pointer" ]] || continue
+        candidate=$(head -n 1 "$pointer")
+        [[ -n "$candidate" && -f "$candidate" && ! -L "$candidate" && -O "$candidate" ]] || continue
+        MANIFEST_FILE="$candidate"
+        MANIFEST_POINTER="$pointer"
+        return 0
+    done
+
+    return 1
 }
 
 # Record a state-change for potential rollback.
@@ -59,7 +101,7 @@ rollback_snapshot_sysctl() {
 rollback_execute_phase() {
     local target_phase="$1"
 
-    if [[ -z "$MANIFEST_FILE" || ! -f "$MANIFEST_FILE" ]]; then
+    if ! rollback_resolve_manifest; then
         log_warn "No rollback manifest found"
         return 1
     fi
@@ -76,7 +118,7 @@ rollback_execute_phase() {
 
 # Execute full rollback (all phases, newest first)
 rollback_execute_all() {
-    if [[ -z "$MANIFEST_FILE" || ! -f "$MANIFEST_FILE" ]]; then
+    if ! rollback_resolve_manifest; then
         log_warn "No rollback manifest found"
         return 1
     fi
@@ -160,10 +202,36 @@ _rollback_action() {
 
 # Clean up manifest after successful completion
 rollback_cleanup() {
+    # Only retract the pointer if it still names our manifest — a concurrent
+    # run may have published its own, and stranding it would make that run's
+    # changes unrecoverable.
+    if [[ -n "$MANIFEST_POINTER" && -f "$MANIFEST_POINTER" ]] && \
+       [[ "$(head -n 1 "$MANIFEST_POINTER" 2>/dev/null)" == "$MANIFEST_FILE" ]]; then
+        rm -f "$MANIFEST_POINTER"
+    fi
+
     if [[ -n "$MANIFEST_FILE" && -f "$MANIFEST_FILE" ]]; then
         rm -f "$MANIFEST_FILE"
         log_debug "Rollback manifest cleaned up"
     fi
+}
+
+# Guard plus recovery offer for setup.sh's ERR trap. Always returns 0: a trap
+# handler that fails would mask the failure it is reporting on.
+rollback_on_failure() {
+    rollback_resolve_manifest || return 0
+
+    # Don't leave the box half-configured. Interactively offer to undo;
+    # otherwise print the exact manual recovery command.
+    if [[ "${HEADLESS:-false}" != "true" ]] && \
+       confirm_prompt "Roll back the changes made so far?" "y"; then
+        rollback_execute_all && log_info "Rollback completed."
+    else
+        log_warn "A rollback manifest exists. You can undo changes with:"
+        log_warn "  sudo bash ${0} --rollback"
+    fi
+
+    return 0
 }
 
 # Offer rollback choice to user on error
@@ -213,14 +281,15 @@ _on_error() {
 _on_interrupt() {
     printf '\n'
     log_warn "Interrupted by user"
-    if [[ -n "$MANIFEST_FILE" && -f "$MANIFEST_FILE" ]] && \
-       [[ -s "$MANIFEST_FILE" ]]; then
-        if [[ "$HEADLESS" != "true" ]]; then
-            if confirm_prompt "Roll back changes made so far?" "y"; then
-                rollback_execute_all
-            else
-                log_warn "Manifest saved at: $MANIFEST_FILE"
-            fi
+    if rollback_resolve_manifest && [[ -s "$MANIFEST_FILE" ]]; then
+        # Never roll back unattended on a signal: headless callers get the
+        # manifest path so they can decide.
+        if [[ "${HEADLESS:-false}" != "true" ]] && \
+           confirm_prompt "Roll back changes made so far?" "y"; then
+            rollback_execute_all
+        else
+            log_warn "Manifest saved at: $MANIFEST_FILE"
+            log_warn "Run with --rollback to undo changes later"
         fi
     fi
     exit "$E_USER_ABORT"

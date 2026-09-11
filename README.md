@@ -39,14 +39,54 @@ Everything runs rootless under a dedicated `matrix` system user (except Coturn, 
 
 ## Requirements
 
-- Linux server (Ubuntu 22.04+, Debian 12+, Fedora 39+, CentOS Stream 9+, Arch, openSUSE)
+- Linux server with systemd, running one of:
+
+  | Distribution | Podman in its own repository |
+  | --- | --- |
+  | Ubuntu 24.04 LTS or newer | 4.9.3 |
+  | Debian 13 (trixie) or newer | 5.4.2 |
+  | Fedora 41 or newer | 5.6.2 (F43), 5.8.1 (F44) |
+  | CentOS Stream 9 / RHEL 9 or newer | 5.8.5 |
+  | Arch Linux | 6.1.1 (rolling) |
+  | openSUSE Leap 15.6 or newer | 4.8.3 (15.6), 5.4.2 (16.0), 5.8.2 (16.1) |
+  | openSUSE Tumbleweed | 6.0.2 (rolling) |
+
+  Versions are as published by each distribution's repository metadata in
+  September 2026; a release only qualifies if its *own* repository meets the
+  floor below. Fedora 41 and 42 clear the floor but are past end of life and
+  their repositories are no longer carried by the mirrors, so `dnf install`
+  will not work there.
+
 - Root access
 - 512 MB RAM minimum (2 GB+ recommended for Synapse)
 - 1 GB free disk (5 GB+ recommended)
 - A domain name with DNS A record pointing to the server
 - Ports 80 and 443 available (or an existing reverse proxy)
 
-Podman 4.4.0+ is required and will be installed automatically if missing.
+Podman 4.7.0+ is required, for two reasons:
+
+- Every systemd unit this installer writes is a
+  [Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html)
+  unit. Quadlet arrived in [Podman 4.4.0](https://github.com/containers/podman/releases/tag/v4.4.0).
+- `--podman-secrets` mode reads secrets back with `podman secret inspect
+  --showsecret`, added in [Podman 4.7.0](https://github.com/containers/podman/releases/tag/v4.7.0)
+  (`podman secret exists` came in 4.5.0).
+
+4.7.0 is one floor for both rather than a mode that silently degrades on
+older Podman. Podman is installed automatically from your distribution's own
+repository if it is missing; no third-party repositories are added.
+
+Ubuntu 22.04 (Podman 3.4.4) and Debian 12 (Podman 4.3.1) are **not**
+supported. Neither has a backport that reaches the floor.
+
+Where a distribution packages no `podman-compose` — openSUSE Leap 16.0 and
+16.1, and Arch if neither the official repository nor the AUR works out — the
+installer creates a virtualenv at `/usr/local/lib/matrix-setup/podman-compose`
+and installs a pinned `podman-compose` into it. Nothing is installed into the
+system Python, so PEP 668 (`EXTERNALLY-MANAGED`) distributions are unaffected
+and `--break-system-packages` is never used. Leap 15.6 and Tumbleweed package
+it as `python311-podman-compose` / `python313-podman-compose` and take that
+instead.
 
 ## Quick Start
 

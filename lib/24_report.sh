@@ -40,8 +40,8 @@ report_generate() {
 
         echo ""
         echo "--- Ports ---"
-        echo "  HTTP:           ${PORT_HTTP}"
-        echo "  HTTPS:          ${PORT_HTTPS}"
+        echo "  HTTP:           ${CONFIG[caddy.http_port]:-$PORT_HTTP}"
+        echo "  HTTPS:          ${CONFIG[caddy.https_port]:-$PORT_HTTPS}"
         if [[ "${CONFIG[federation.enabled]:-true}" == "true" ]]; then
             echo "  Federation:     ${PORT_FEDERATION}"
         fi
@@ -59,6 +59,13 @@ report_generate() {
             echo "  Secrets store:  Podman secrets (list: podman secret ls)"
         else
             echo "  Secrets file:   ${install_dir}/.env"
+        fi
+        if [[ "${CONFIG[monitoring.enabled]:-false}" == "true" ]]; then
+            if [[ "${CONFIG[secrets.mode]:-env}" == "podman" ]]; then
+                echo "  Grafana login:  admin / podman secret matrix-grafana-password"
+            else
+                echo "  Grafana login:  admin / GRAFANA_ADMIN_PASSWORD in the secrets file"
+            fi
         fi
         echo "  !! SIGNING KEY: ${install_dir}/data/signing-keys/"
         echo "     ^ This key is CRITICAL. Loss = server identity compromise."

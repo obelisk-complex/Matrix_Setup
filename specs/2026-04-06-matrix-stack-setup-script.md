@@ -15,7 +15,7 @@ A modular Bash setup script that deploys a complete Matrix communication stack (
 - **Container runtime:** Podman (rootless where possible, rootful for Coturn)
 - **Reverse proxy:** Caddy (automatic HTTPS)
 - **Database:** PostgreSQL (containerized or detected on host)
-- **Target OS:** Any Linux with Podman >= 4.4.0 (distro detection and adaptation)
+- **Target OS:** Any Linux with Podman >= 4.7.0 (distro detection and adaptation)
 - **Key architectural constraint:** Podman rootless cannot bind privileged ports or relay UDP media; resolved via sysctl for ports 80/443 and host-network mode for Coturn
 
 ## User Roles
@@ -29,7 +29,7 @@ A modular Bash setup script that deploys a complete Matrix communication stack (
 ## Constraints
 
 - **Technology:** Podman Compose (not Docker), Caddy (not nginx/Traefik), Bash
-- **Podman version:** Minimum 4.4.0 (Quadlet support), recommended 5.0.0+ (pasta networking)
+- **Podman version:** Minimum 4.7.0 (Quadlet needs 4.4.0; `podman secret inspect --showsecret`, used by `--podman-secrets`, needs 4.7.0), recommended 5.0.0+ (pasta networking)
 - **Rootless limitation:** Caddy requires `net.ipv4.ip_unprivileged_port_start=80` sysctl; Coturn requires `--network=host` (rootful)
 - **Domain immutability:** Matrix server name is permanent once set; cannot be changed without full redeployment and data loss
 - **Synapse registration:** Since v1.56.0, open registration requires verification (email or captcha); script must enforce this
@@ -89,8 +89,8 @@ A modular Bash setup script that deploys a complete Matrix communication stack (
 
 | ID | Requirement | Target | Measurement |
 |----|-------------|--------|-------------|
-| NFR-01 | **Cross-distro compatibility** | Ubuntu 22.04/24.04, Debian 12, Fedora 39+, CentOS Stream 9, RHEL 9, Arch, openSUSE Tumbleweed | Script completes successfully on each distro in a clean VM |
-| NFR-02 | **Podman version** | Minimum 4.4.0, recommended 5.0.0+ | Script checks version, refuses < 4.4.0, warns < 5.0.0 |
+| NFR-01 | **Cross-distro compatibility** | Ubuntu 24.04+, Debian 13+, Fedora 41+, CentOS Stream 9, RHEL 9, Arch, openSUSE Leap 15.6+, openSUSE Tumbleweed. Ubuntu 22.04 (Podman 3.4.4) and Debian 12 (Podman 4.3.1) are excluded by NFR-02. Lowest shipped version in the supported set is 4.8.3 (openSUSE Leap 15.6). | Script completes successfully on each distro in a clean VM |
+| NFR-02 | **Podman version** | Minimum 4.7.0 (Quadlet 4.4.0 + `podman secret inspect --showsecret` 4.7.0), recommended 5.0.0+ | Script checks version, refuses < 4.7.0, warns < 5.0.0 |
 | NFR-03 | **Setup completion time** | < 15 minutes on a 2-core VPS with decent network | Timed end-to-end from script start to post-install report |
 | NFR-04 | **TLS security** | TLS 1.2+ only, HSTS enabled, strong ciphers | SSL Labs / testssl.sh scan grade A or higher |
 | NFR-05 | **Service auto-start** | All services start after reboot without manual intervention | Reboot server, verify all services are running via health checks within 60 seconds |
@@ -174,7 +174,7 @@ A modular Bash setup script that deploys a complete Matrix communication stack (
 | Scenario | Expected Behavior |
 |----------|-------------------|
 | DNS not propagated yet | Caddy retries ACME challenge; script warns and offers to wait or proceed with self-signed cert for testing |
-| Podman version < 4.4.0 | Script displays installed vs required version, offers to install newer version from upstream repo, refuses to proceed if declined |
+| Podman version < 4.7.0 | Script displays installed vs required version and why the floor exists, offers to install a newer version from the distribution's own repository, refuses to proceed if declined |
 | Disk nearly full (< 5GB free) | Script warns before proceeding; refuses if < 1GB free |
 | Existing Matrix installation detected | Offer upgrade (pull images), reconfigure, or abort; refuse to change server name |
 | Port 80/443 already bound | Identify bound process/proxy, offer config snippets or skip Caddy |
@@ -182,7 +182,7 @@ A modular Bash setup script that deploys a complete Matrix communication stack (
 | Postgres version too old (< 12) | Warn about EOL version, offer to containerize a current version alongside |
 | systemd-resolved active (DNS 127.0.0.53) | Detect upstream DNS from `resolvectl`, configure Podman `--dns` or `containers.conf` to use real resolvers |
 | SELinux enforcing | Detect and configure `:Z` volume labels on all container mounts; configure appropriate SELinux booleans |
-| AppArmor active | Generate and load AppArmor profiles for Podman containers |
+| AppArmor active | Report that AppArmor is active and that no custom profile is loaded: the stack's services run under rootless Podman, which does not apply AppArmor confinement (containers/common `pkg/apparmor`: "AppArmor is not supported in rootless mode"). Do not disable AppArmor. |
 | IPv6 available but DNS has no AAAA record | Warn that IPv6 is available but DNS lacks AAAA record; offer Cloudflare API or print instructions |
 | SMTP connection fails | Test SMTP connectivity after configuration; warn if unreachable, allow to continue (email features degraded) |
 | User enters domain typo | Double-entry confirmation; RFC 1035 validation; DNS lookup as additional check |

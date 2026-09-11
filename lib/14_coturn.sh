@@ -52,7 +52,7 @@ coturn_setup() {
     template_render \
         "${SCRIPT_DIR}/templates/configs/turnserver.conf.tpl" \
         "$config_dir/turnserver.conf" \
-        turn_vars
+        turn_vars || return 1
 
     chmod 640 "$config_dir/turnserver.conf"
     rollback_snapshot "coturn" "FILE_CREATED" "$config_dir/turnserver.conf"

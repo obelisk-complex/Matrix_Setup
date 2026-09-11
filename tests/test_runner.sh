@@ -92,6 +92,21 @@ main() {
     printf '%sResults: %d passed, %d failed, %d skipped%s\n' \
         "$BOLD" "$TESTS_PASSED" "$TESTS_FAILED" "$TESTS_SKIPPED" "$RESET"
 
+    # The child exit status is not the only failure signal: a test file that
+    # emits "not ok" but omits its trailing test_report exits 0, which would
+    # print failures and still leave the runner green. Make the counter
+    # authoritative as well.
+    if (( TESTS_FAILED > 0 )); then
+        total_exit=1
+    fi
+
+    # Discovering nothing is a broken run, not a clean one.
+    if (( TESTS_RUN == 0 && TESTS_SKIPPED == 0 )); then
+        printf '%sNo tests were discovered%s%s\n' \
+            "$RED" "${filter:+ matching filter: $filter}" "$RESET" >&2
+        total_exit=1
+    fi
+
     if [[ ${#FAILED_TESTS[@]} -gt 0 ]]; then
         printf '%sFailed:%s\n' "$RED" "$RESET"
         for t in "${FAILED_TESTS[@]}"; do

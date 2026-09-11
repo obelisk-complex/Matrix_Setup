@@ -53,18 +53,7 @@ harden_ssh() {
 
     mkdir -p "$ssh_dir"
     rollback_snapshot_file "$CURRENT_PHASE" "$ssh_conf"
-
-    cat > "$ssh_conf" << 'SSH'
-# Matrix Stack SSH Hardening - managed by matrix-setup
-PasswordAuthentication no
-PermitRootLogin no
-PubkeyAuthentication yes
-AuthenticationMethods publickey
-X11Forwarding no
-MaxAuthTries 3
-ClientAliveInterval 300
-ClientAliveCountMax 2
-SSH
+    _harden_ssh_write "$ssh_conf" || return 1
 
     # Test sshd config before reloading
     if sshd -t 2>/dev/null; then
@@ -73,6 +62,23 @@ SSH
         log_warn "SSH config test failed, reverting"
         rm -f "$ssh_conf"
     fi
+}
+
+# Split from harden_ssh so the generated drop-in can be inspected without
+# writing into /etc/ssh or reloading a live sshd.
+_harden_ssh_write() {
+    local dest="$1"
+    # Restricting forwarding is opt-in. The default emits no AllowTcpForwarding
+    # line at all rather than an explicit "yes": this drop-in is read ahead of
+    # the operator's own sshd_config, so writing "yes" would quietly undo a
+    # restriction they had already set for themselves.
+    local no_forwarding="false"
+    [[ "${CONFIG[hardening.ssh_tcp_forwarding]:-true}" == "true" ]] || no_forwarding="true"
+
+    # shellcheck disable=SC2034  # passed to template_render by name (nameref)
+    declare -A ssh_vars=([SSH_NO_TCP_FORWARDING]="$no_forwarding")
+    template_render "${SCRIPT_DIR}/templates/hardening/99-matrix-hardening.conf.tpl" \
+        "$dest" ssh_vars
 }
 
 harden_firewall() {
@@ -210,38 +216,88 @@ harden_fail2ban() {
     # Matrix login jail
     local jail_file="/etc/fail2ban/jail.d/matrix.conf"
     local filter_file="/etc/fail2ban/filter.d/matrix-synapse.conf"
-    local install_dir="${CONFIG[install_dir]:-$DEFAULT_INSTALL_DIR}"
 
     rollback_snapshot_file "$CURRENT_PHASE" "$jail_file"
-    cat > "$jail_file" << JAIL
-[matrix-synapse]
-enabled = true
-port = 443,$PORT_FEDERATION
-filter = matrix-synapse
-logpath = $install_dir/data/synapse/homeserver.log
-maxretry = 5
-findtime = 300
-bantime = 3600
-backend = auto
-
-[sshd]
-enabled = true
-maxretry = 3
-findtime = 300
-bantime = 3600
-JAIL
-
     rollback_snapshot_file "$CURRENT_PHASE" "$filter_file"
-    cat > "$filter_file" << 'FILTER'
-[Definition]
-failregex = ^.* Received request: POST /_matrix/client/.*/login.*from <HOST>.*$
-            ^.* Failed password login attempt.*from <HOST>.*$
-            ^.*\[synapse\.rest\.client\.login\].*<HOST>.*403.*$
-ignoreregex =
-FILTER
+    _harden_fail2ban_write "$jail_file" "$filter_file" || return 1
 
     systemctl enable --now fail2ban 2>/dev/null || true
     systemctl restart fail2ban 2>/dev/null || true
+}
+
+# Renders the jail and filter from templates/hardening/. Split from
+# harden_fail2ban so the generated files can be inspected without writing into
+# /etc/fail2ban or restarting a live fail2ban.
+_harden_fail2ban_write() {
+    local jail_dest="$1" filter_dest="$2"
+    local install_dir="${CONFIG[install_dir]:-$DEFAULT_INSTALL_DIR}"
+
+    # Synapse's logging config writes to /data/logs/homeserver.log inside the
+    # container (templates/configs/log.config.tpl, LOG_FILE_PATH in
+    # lib/12_homeserver.sh) and templates/compose/synapse.yml bind-mounts
+    # <install_dir>/data/logs there. The jail previously tailed
+    # <install_dir>/data/synapse/, a directory nothing creates or writes.
+    local log_dir="$install_dir/data/logs"
+    local log_path="$log_dir/homeserver.log"
+
+    # Dendrite logs to stdout only (templates/configs/homeserver.dendrite.yaml.tpl
+    # sets 'logging: - type: std'), so it never writes this file, and the filter's
+    # patterns are Synapse-specific regardless. An enabled jail that cannot match
+    # anything reads as protection while providing none.
+    local synapse_jail="true"
+    if [[ "${CONFIG[homeserver.type]:-synapse}" != "synapse" ]]; then
+        synapse_jail="false"
+        log_warn "Homeserver is Dendrite: it logs to stdout, not to a file fail2ban can tail."
+        log_warn "  Installing the sshd jail only; there is no Matrix login jail on Dendrite."
+    else
+        _harden_fail2ban_log_dir "$log_dir"
+    fi
+
+    # shellcheck disable=SC2034  # passed to template_render by name (nameref)
+    declare -A jail_vars=(
+        [SYNAPSE_JAIL]="$synapse_jail"
+        [HTTPS_PORT]="$PORT_HTTPS"
+        [FEDERATION_PORT]="$PORT_FEDERATION"
+        [SYNAPSE_LOG_PATH]="$log_path"
+    )
+    template_render "${SCRIPT_DIR}/templates/hardening/fail2ban-matrix.conf.tpl" \
+        "$jail_dest" jail_vars || return 1
+
+    # shellcheck disable=SC2034  # passed to template_render by name (nameref)
+    declare -A filter_vars=()
+    template_render "${SCRIPT_DIR}/templates/hardening/fail2ban-matrix-filter.conf.tpl" \
+        "$filter_dest" filter_vars || return 1
+}
+
+# Creates the directory the Synapse jail watches, owned by the user the rootless
+# container writes as.
+#
+# Hardening runs before homeserver_setup (setup.sh: hardening, PostgreSQL, then
+# Homeserver), so without this the directory does not exist when fail2ban
+# starts. fail2ban tolerates a log *file* that is not there yet — the pyinotify
+# backend watches the parent directory for IN_CREATE
+# (fail2ban/server/filterpyinotify.py: _addFileWatcher calls _addDirWatcher) and
+# the polling backend keeps a per-path __file404Cnt (server/filterpoll.py) — but
+# neither can watch a directory that does not exist. Creating it here is
+# therefore sufficient, and is narrower than reordering the phases.
+_harden_fail2ban_log_dir() {
+    local log_dir="$1"
+    local matrix_user="${CONFIG[matrix_user]:-$DEFAULT_MATRIX_USER}"
+
+    if ! mkdir -p "$log_dir" 2>/dev/null; then
+        log_warn "Could not create the Synapse log directory $log_dir."
+        log_warn "  The matrix-synapse jail will not start until it exists."
+        return 0
+    fi
+
+    # The homeserver container runs rootless as this user. A root-owned
+    # directory would leave Synapse unable to write its log, and the jail with
+    # nothing to read.
+    if ! chown "$matrix_user:" "$log_dir" 2>/dev/null; then
+        log_warn "Could not give $log_dir to $matrix_user; Synapse may be unable to write its log."
+    fi
+    chmod 750 "$log_dir" 2>/dev/null || true
+    rollback_snapshot "$CURRENT_PHASE" "FILE_CREATED" "$log_dir"
 }
 
 harden_sysctl() {
@@ -254,42 +310,81 @@ harden_sysctl() {
     rollback_snapshot_sysctl "$CURRENT_PHASE" "net.ipv4.ip_unprivileged_port_start"
     rollback_snapshot_sysctl "$CURRENT_PHASE" "net.ipv4.tcp_syncookies"
 
-    cat > "$sysctl_file" << 'SYSCTL'
-# Matrix Stack sysctl hardening - managed by matrix-setup
-
-# Allow rootless Podman to bind ports 80/443
-net.ipv4.ip_unprivileged_port_start=80
-
-# Network hardening
-net.core.somaxconn=1024
-net.ipv4.tcp_syncookies=1
-net.ipv4.conf.all.rp_filter=1
-net.ipv4.conf.default.rp_filter=1
-net.ipv4.icmp_echo_ignore_broadcasts=1
-net.ipv4.conf.all.accept_redirects=0
-net.ipv4.conf.default.accept_redirects=0
-net.ipv4.conf.all.send_redirects=0
-net.ipv6.conf.all.accept_redirects=0
-net.ipv6.conf.default.accept_redirects=0
-
-# Reduce information disclosure
-net.ipv4.icmp_ignore_bogus_error_responses=1
-SYSCTL
+    _harden_sysctl_write "$sysctl_file" || return 1
 
     sysctl --system &>/dev/null
 }
 
+# Split from harden_sysctl so the generated file can be inspected without
+# writing into /etc/sysctl.d or applying anything to the running kernel.
+_harden_sysctl_write() {
+    local dest="$1"
+    # Second argument overrides the /proc key the conntrack option probes for,
+    # so the "kernel does not expose this" branch is reachable in a test.
+    local conntrack_key="${2:-/proc/sys/net/netfilter/nf_conntrack_max}"
+
+    local conntrack_max="${CONFIG[hardening.conntrack_max]:-}"
+    local conntrack_set="false"
+    if [[ -n "$conntrack_max" ]]; then
+        # nf_conntrack is a module: on a host that has never loaded it the key
+        # does not exist and `sysctl --system` fails on the whole file, taking
+        # the rest of the hardening down with it.
+        if [[ -e "$conntrack_key" ]]; then
+            conntrack_set="true"
+        else
+            log_warn "Kernel does not expose $conntrack_key (nf_conntrack module not loaded)."
+            log_warn "  Skipping hardening.conntrack_max=$conntrack_max; the rest of the sysctl settings still apply."
+        fi
+    fi
+
+    # shellcheck disable=SC2034  # passed to template_render by name (nameref)
+    declare -A sysctl_vars=(
+        [IPV6_PRIVACY]="${CONFIG[hardening.ipv6_privacy]:-false}"
+        [CONNTRACK_MAX_SET]="$conntrack_set"
+        [CONNTRACK_MAX]="$conntrack_max"
+    )
+    template_render "${SCRIPT_DIR}/templates/hardening/sysctl-matrix.conf.tpl" \
+        "$dest" sysctl_vars
+}
+
+# Reports the mandatory-access-control confinement actually in force. SELinux
+# (RHEL/Fedora/CentOS) and AppArmor (Debian/Ubuntu/openSUSE) are mutually
+# exclusive in practice, and a host may run neither (Arch); all three cases are
+# stated rather than passed over silently. detect_selinux/detect_apparmor in
+# lib/02_detect.sh set SELINUX_MODE and APPARMOR_ACTIVE.
 harden_mac() {
-    # SELinux/AppArmor hardening only applies when those systems are detected.
-    # On Arch Linux (which typically uses neither), this step is skipped appropriately.
-    # The detection in 02_detect.sh sets SELINUX_MODE and APPARMOR_ACTIVE based on availability.
+    local configured="false"
+
     if [[ "$SELINUX_MODE" == "enforcing" || "$SELINUX_MODE" == "permissive" ]]; then
         log_substep "SELinux detected ($SELINUX_MODE), configuring booleans"
         setsebool -P container_manage_cgroup on 2>/dev/null || true
+        log_substep "Container volumes are labelled :Z (see VOLUME_LABEL in lib/19_compose.sh)"
+        configured="true"
     fi
 
     if [[ "$APPARMOR_ACTIVE" == "true" ]]; then
-        log_substep "AppArmor detected, no custom profiles needed for Podman"
+        # No custom profile is generated or loaded, and the reason is not that
+        # one would be redundant: the stack's services run under rootless
+        # Podman (lib/21_deploy.sh starts compose via run_as_user), and Podman
+        # does not apply AppArmor confinement in rootless mode. Its AppArmor
+        # support check consults unshare.IsRootless() and it reports
+        # "AppArmor is not supported in rootless mode" /
+        # "Skipping loading default AppArmor profile (rootless mode)"
+        # (containers/common pkg/apparmor; strings present in the podman
+        # binary). Loading a profile here would leave a policy in the kernel
+        # that nothing attaches to, which reads as protection but is none.
+        # Profile syntax and loading, for whoever revisits this:
+        # apparmor.d(5) and apparmor_parser(8) ("-r, --replace").
+        log_substep "AppArmor is active on this host"
+        log_substep "No custom profile is loaded: rootless Podman does not apply AppArmor confinement"
+        log_substep "  Containers are isolated by the user namespace instead; see README for the model"
+        configured="true"
+    fi
+
+    if [[ "$configured" != "true" ]]; then
+        log_warn "Neither SELinux nor AppArmor is active on this host."
+        log_warn "  No mandatory access control confines the containers; user-namespace"
+        log_warn "  isolation and the seccomp defaults are the only container boundaries."
     fi
 }
 

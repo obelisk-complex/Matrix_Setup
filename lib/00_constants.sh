@@ -19,9 +19,23 @@ readonly E_HARDENING=6
 readonly E_USER_ABORT=130
 
 # --- Podman version constraints ---
-readonly MIN_PODMAN_VERSION="4.4.0"
+# 4.4.0 introduced Quadlet, which every systemd unit here depends on; 4.7.0
+# added `podman secret inspect --showsecret`, which --podman-secrets mode
+# reads back with. One floor rather than gating the mode separately.
+readonly MIN_PODMAN_VERSION="4.7.0"
 readonly REC_PODMAN_VERSION="5.0.0"
 readonly MIN_PG_VERSION="13"
+
+# --- podman-compose pip fallback ---
+# Used only where the distribution packages no podman-compose (openSUSE Leap
+# 16.x, and Arch when neither the official repo nor the AUR works out). It goes
+# into its own virtualenv: PEP 668 distributions refuse a system-wide pip
+# install, and --break-system-packages is precisely the breakage that marker
+# exists to prevent. MATRIX_SETUP_VENV_ROOT exists so tests can redirect this;
+# nothing in the installer sets it.
+readonly PODMAN_COMPOSE_VENV="${MATRIX_SETUP_VENV_ROOT:-/usr/local/lib/matrix-setup}/podman-compose"
+readonly PODMAN_COMPOSE_VENV_BIN="$PODMAN_COMPOSE_VENV/bin/podman-compose"
+readonly PODMAN_COMPOSE_VERSION="1.3.0"
 
 # --- Pinned container images (tag + immutable @sha256 digest) ---
 # Every image is pinned to "tag@sha256:digest". The digest is the immutable

@@ -56,5 +56,177 @@ assert_file_exists "$TEST_TMP/removable-file" "file exists before rollback"
 # Clean up manifest
 rm -f "$MANIFEST_FILE"
 
+# =====================================================================
+# Reachability from setup.sh's entry points.
+#
+# Everything above this line drives the manifest engine in-process, with
+# MANIFEST_FILE already in memory. The tests below cover the part that was
+# broken: finding the manifest again from setup.sh's traps and from a
+# separate --rollback process, where MANIFEST_FILE is empty.
+#
+# Keep the fallback directory inside the sandbox: rollback actions delete
+# files, so no test here may reach a real /tmp/.rollback-manifest.
+# =====================================================================
+mkdir -p "$TEST_TMP/tmpfallback"
+export TMPDIR="$TEST_TMP/tmpfallback"
+
+# --- A dangling pointer (manifest deleted, as just happened above) is not a
+#     manifest ---
+CONFIG[install_dir]="$TEST_TMP"
+MANIFEST_FILE=""
+assert_false "guard is false when the pointer's manifest is gone" rollback_resolve_manifest
+
+# --- Fixed-name pointer alongside the unpredictable manifest ---
+RB_DIR="$TEST_TMP/reach"
+mkdir -p "$RB_DIR"
+CONFIG[install_dir]="$RB_DIR"
+MANIFEST_FILE=""
+rollback_init_manifest
+RB_MANIFEST="$MANIFEST_FILE"
+RB_POINTER="$RB_DIR/$MATRIX_SETUP_MANIFEST_FILE"
+
+assert_file_exists "$RB_POINTER" "pointer created at the fixed manifest path"
+assert_eq "$RB_MANIFEST" "$(cat "$RB_POINTER")" "pointer records the mktemp'd manifest path"
+assert_ne "$RB_POINTER" "$RB_MANIFEST" "manifest keeps its unpredictable mktemp name"
+assert_eq "600" "$(stat -c '%a' "$RB_MANIFEST")" "manifest is still mode 0600"
+
+# --- The guard finds it again with nothing in memory ---
+MANIFEST_FILE=""
+assert_true "guard resolves the manifest via the pointer" rollback_resolve_manifest
+assert_eq "$RB_MANIFEST" "$MANIFEST_FILE" "guard sets MANIFEST_FILE to the recorded path"
+
+# --- A symlink planted at the fixed path is refused, not followed. The link
+#     target is a well-formed pointer, so only the symlink check can reject
+#     it: rollback would otherwise delete whatever the planter chose. ---
+SYM_DIR="$TEST_TMP/symlink"
+mkdir -p "$SYM_DIR"
+printf '%s\n' "$RB_MANIFEST" > "$TEST_TMP/planted-pointer"
+ln -s "$TEST_TMP/planted-pointer" "$SYM_DIR/$MATRIX_SETUP_MANIFEST_FILE"
+CONFIG[install_dir]="$SYM_DIR"
+MANIFEST_FILE=""
+assert_false "guard refuses a symlinked pointer" rollback_resolve_manifest
+
+# --- ERR-trap guard body: headless prints the recovery command ---
+CONFIG[install_dir]="$RB_DIR"
+MANIFEST_FILE=""
+HEADLESS="true"
+trap_out=$(rollback_on_failure 2>&1)
+assert_match "--rollback" "$trap_out" "ERR-trap guard prints the --rollback recovery hint"
+
+CONFIG[install_dir]="$SYM_DIR"
+MANIFEST_FILE=""
+trap_out=$(rollback_on_failure 2>&1)
+assert_no_match "--rollback" "$trap_out" "ERR-trap guard stays quiet with no manifest"
+
+# --- ERR-trap guard body: an interactive 'yes' actually rolls back ---
+CONFIG[install_dir]="$RB_DIR"
+MANIFEST_FILE=""
+rollback_resolve_manifest || true
+touch "$RB_DIR/created-by-setup"
+rollback_snapshot "deploy" "FILE_CREATED" "$RB_DIR/created-by-setup"
+
+MANIFEST_FILE=""
+HEADLESS="false"
+rollback_on_failure <<< "y" >/dev/null 2>&1
+HEADLESS="true"
+assert_false "ERR-trap guard rolled back the recorded file" test -e "$RB_DIR/created-by-setup"
+
+# --- Interrupt handler: same reachability, exits E_USER_ABORT ---
+INT_DIR="$TEST_TMP/interrupt"
+mkdir -p "$INT_DIR"
+CONFIG[install_dir]="$INT_DIR"
+MANIFEST_FILE=""
+rollback_init_manifest
+touch "$INT_DIR/created-before-ctrl-c"
+rollback_snapshot "deploy" "FILE_CREATED" "$INT_DIR/created-before-ctrl-c"
+
+MANIFEST_FILE=""
+HEADLESS="false"
+int_rc=0
+( _on_interrupt <<< "y" ) >/dev/null 2>&1 || int_rc=$?
+HEADLESS="true"
+assert_eq "$E_USER_ABORT" "$int_rc" "interrupt handler exits E_USER_ABORT"
+assert_false "interrupt handler rolled back the recorded file" test -e "$INT_DIR/created-before-ctrl-c"
+
+# --- Cleanup removes both the manifest and the pointer it created ---
+CONFIG[install_dir]="$RB_DIR"
+MANIFEST_FILE=""
+rollback_resolve_manifest || true
+rollback_cleanup
+assert_false "cleanup removed the manifest" test -e "$RB_MANIFEST"
+assert_false "cleanup removed the pointer" test -e "$RB_POINTER"
+
+# --- Two concurrent runs must not merge, and the first to finish must not
+#     strand the second ---
+CONC_DIR="$TEST_TMP/concurrent"
+mkdir -p "$CONC_DIR"
+CONFIG[install_dir]="$CONC_DIR"
+MANIFEST_FILE=""
+rollback_init_manifest
+conc_manifest_a="$MANIFEST_FILE"
+conc_pointer_a="$MANIFEST_POINTER"
+MANIFEST_FILE=""
+rollback_init_manifest
+conc_manifest_b="$MANIFEST_FILE"
+
+assert_ne "$conc_manifest_a" "$conc_manifest_b" "concurrent runs get separate manifests"
+
+MANIFEST_FILE="$conc_manifest_a"
+MANIFEST_POINTER="$conc_pointer_a"
+rollback_cleanup
+assert_false "first run's cleanup removed its own manifest" test -e "$conc_manifest_a"
+assert_file_exists "$CONC_DIR/$MATRIX_SETUP_MANIFEST_FILE" "first run's cleanup left the second run's pointer"
+MANIFEST_FILE=""
+rollback_resolve_manifest || true
+assert_eq "$conc_manifest_b" "$MANIFEST_FILE" "pointer still resolves to the second run's manifest"
+
+# --- Fallback when install_dir is unwritable ---
+RO_DIR="$TEST_TMP/unwritable"
+mkdir -p "$RO_DIR"
+chmod 500 "$RO_DIR"
+CONFIG[install_dir]="$RO_DIR"
+MANIFEST_FILE=""
+rollback_init_manifest
+assert_eq "$TMPDIR" "$(dirname "$MANIFEST_FILE")" "manifest falls back out of an unwritable install_dir"
+assert_file_exists "$TMPDIR/$MATRIX_SETUP_MANIFEST_FILE" "pointer follows the manifest into the fallback dir"
+fallback_manifest="$MANIFEST_FILE"
+MANIFEST_FILE=""
+rollback_resolve_manifest || true
+assert_eq "$fallback_manifest" "$MANIFEST_FILE" "guard resolves a fallback manifest too"
+rollback_cleanup
+# Belt and braces: teardown only clears TEST_TMP, and a broken fallback would
+# put these in the real /tmp.
+rm -f "$fallback_manifest" \
+      "$(dirname "$fallback_manifest")/$MATRIX_SETUP_MANIFEST_FILE"
+chmod 700 "$RO_DIR"
+
+# --- Cross-process: a fresh `setup.sh --rollback` finds a manifest left by an
+#     earlier process. Needs a mapped-root user namespace for require_root. ---
+if command -v unshare >/dev/null 2>&1 && unshare -r true 2>/dev/null; then
+    XP_DIR="$TEST_TMP/crossproc"
+    mkdir -p "$XP_DIR"
+    printf 'install_dir = "%s"\n[domain]\nname = "matrix.example.com"\n' \
+        "$XP_DIR" > "$TEST_TMP/crossproc.toml"
+
+    # Subshell: the manifest must survive on disk, not in this shell.
+    (
+        CONFIG[install_dir]="$XP_DIR"
+        MANIFEST_FILE=""
+        rollback_init_manifest
+        touch "$XP_DIR/left-behind"
+        rollback_snapshot "deploy" "FILE_CREATED" "$XP_DIR/left-behind"
+    )
+
+    xp_rc=0
+    unshare -r bash "$PROJECT_DIR/setup.sh" --rollback \
+        --config "$TEST_TMP/crossproc.toml" >"$TEST_TMP/crossproc.log" 2>&1 || xp_rc=$?
+
+    assert_eq "0" "$xp_rc" "setup.sh --rollback succeeds against another process's manifest"
+    assert_false "setup.sh --rollback undid the recorded action" test -e "$XP_DIR/left-behind"
+else
+    skip_test "setup.sh --rollback cross-process (no usable user namespace)"
+    skip_test "setup.sh --rollback undid the recorded action (no usable user namespace)"
+fi
+
 teardown_test_tmp
 test_report

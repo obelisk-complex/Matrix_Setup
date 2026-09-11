@@ -68,13 +68,33 @@ resolve_digest() {
     printf '%s\n' "$digest"
 }
 
-# Build NAME -> current ref map from the constants file.
+# Build NAME -> current ref map from the constants file. Also count every line
+# that merely *looks* like an image declaration, so a constants file the strict
+# regex no longer matches cannot pass silently.
 declare -A CURRENT=()
+declare_lines=0
 while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" == *_IMAGE=* ]] && declare_lines=$((declare_lines + 1))
     if [[ "$line" =~ ^readonly[[:space:]]+([A-Z_]+_IMAGE)=\"([^\"]+)\" ]]; then
         CURRENT["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
     fi
 done < "$CONSTANTS"
+
+# Nothing parsed means the check verified nothing; that is a failure, not an OK.
+if (( ${#CURRENT[@]} == 0 )); then
+    echo "ERROR: no image declarations parsed from $CONSTANTS" >&2
+    echo "Expected lines of the form: readonly NAME_IMAGE=\"registry/repo:tag[@sha256:...]\"" >&2
+    exit 1
+fi
+
+# A partial match is the same vacuous pass in miniature: the unparsed images
+# would go unverified while the script still reported success.
+if (( ${#CURRENT[@]} != declare_lines )); then
+    echo "ERROR: $CONSTANTS has $declare_lines image declaration(s) but only ${#CURRENT[@]} could be parsed." >&2
+    echo "Every *_IMAGE line must be 'readonly NAME_IMAGE=\"...\"' or this script silently skips it." >&2
+    exit 1
+fi
 
 declare -A RESOLVED=()
 declare -a FAILED=()

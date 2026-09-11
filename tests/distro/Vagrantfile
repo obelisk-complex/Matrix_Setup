@@ -1,7 +1,19 @@
 # -*- mode: ruby -*-
 # Matrix Stack Setup — Multi-Distro Integration Test
 # Usage: cd tests/distro && vagrant up [box-name]
-# Boxes: ubuntu2404, debian12, fedora40, centos9, arch
+# Boxes: ubuntu2404, debian13, fedora42, centos9, arch, leap156, tumbleweed
+#
+# Every box starts bare. Podman, a compose tool, curl, openssl and jq are
+# installed by the project's own prerequisite functions inside
+# test_install_path.sh — pre-installing them here would mean the per-distro
+# package lists were never executed and a wrong package name for a distro
+# could not be detected. The only thing provisioned ahead of the tests is
+# rsync, which Vagrant's rsync-type synced folder needs on the guest before
+# the project directory exists at all.
+#
+# The boxes match README.md's Requirements table. Ubuntu 22.04 and Debian 12
+# are absent deliberately: they ship Podman 3.4.4 and 4.3.1, below the 4.4.0
+# Quadlet floor, so a box for either could only ever go red.
 
 Vagrant.configure("2") do |config|
   config.vm.synced_folder "../../", "/matrix-setup", type: "rsync",
@@ -17,60 +29,91 @@ Vagrant.configure("2") do |config|
     lv.cpus = 2
   end
 
-  # Ubuntu 24.04
+  # Runs the real install path first, then the integration suite.
+  TEST_RUN = "cd /matrix-setup && bash tests/distro/test_install_path.sh && " \
+             "bash tests/distro/test_integration.sh"
+
+  # Ubuntu 24.04 — Podman 4.9.3 (noble/universe)
   config.vm.define "ubuntu2404" do |node|
     node.vm.box = "bento/ubuntu-24.04"
     node.vm.hostname = "matrix-test-ubuntu"
     node.vm.network "private_network", type: "dhcp"
     node.vm.provision "shell", inline: <<-SHELL
       apt-get update -qq
-      apt-get install -y -qq podman podman-compose curl openssl jq
-      cd /matrix-setup && bash tests/distro/test_integration.sh
+      apt-get install -y -qq rsync
+      #{TEST_RUN}
     SHELL
   end
 
-  # Debian 12
-  config.vm.define "debian12" do |node|
-    node.vm.box = "bento/debian-12"
+  # Debian 13 (trixie) — Podman 5.4.2
+  config.vm.define "debian13" do |node|
+    node.vm.box = "bento/debian-13"
     node.vm.hostname = "matrix-test-debian"
     node.vm.network "private_network", type: "dhcp"
     node.vm.provision "shell", inline: <<-SHELL
       apt-get update -qq
-      apt-get install -y -qq podman podman-compose curl openssl jq
-      cd /matrix-setup && bash tests/distro/test_integration.sh
+      apt-get install -y -qq rsync
+      #{TEST_RUN}
     SHELL
   end
 
-  # Fedora 40
-  config.vm.define "fedora40" do |node|
-    node.vm.box = "bento/fedora-40"
+  # Fedora 42 — Podman 5.8.2
+  config.vm.define "fedora42" do |node|
+    node.vm.box = "bento/fedora-42"
     node.vm.hostname = "matrix-test-fedora"
     node.vm.network "private_network", type: "dhcp"
     node.vm.provision "shell", inline: <<-SHELL
-      dnf install -y -q podman podman-compose curl openssl jq
-      cd /matrix-setup && bash tests/distro/test_integration.sh
+      dnf install -y -q rsync
+      #{TEST_RUN}
     SHELL
   end
 
-  # CentOS Stream 9
+  # CentOS Stream 9 — Podman 5.8.5
   config.vm.define "centos9" do |node|
     node.vm.box = "bento/centos-stream-9"
     node.vm.hostname = "matrix-test-centos"
     node.vm.network "private_network", type: "dhcp"
     node.vm.provision "shell", inline: <<-SHELL
-      dnf install -y -q podman podman-compose curl openssl jq
-      cd /matrix-setup && bash tests/distro/test_integration.sh
+      dnf install -y -q rsync
+      #{TEST_RUN}
     SHELL
   end
 
-  # Arch Linux
+  # Arch Linux — rolling
   config.vm.define "arch" do |node|
     node.vm.box = "archlinux/archlinux"
     node.vm.hostname = "matrix-test-arch"
     node.vm.network "private_network", type: "dhcp"
     node.vm.provision "shell", inline: <<-SHELL
-      pacman -Syu --noconfirm podman podman-compose curl openssl jq
-      cd /matrix-setup && bash tests/distro/test_integration.sh
+      pacman -Syu --noconfirm --needed rsync
+      #{TEST_RUN}
+    SHELL
+  end
+
+  # openSUSE Leap 15.6 — Podman 4.8.3, python3 is 3.6 so the TOML parser
+  # takes its Bash fallback here.
+  config.vm.define "leap156" do |node|
+    node.vm.box = "opensuse/Leap-15.6.x86_64"
+    node.vm.hostname = "matrix-test-leap"
+    node.vm.network "private_network", type: "dhcp"
+    node.vm.provision "shell", inline: <<-SHELL
+      zypper --non-interactive refresh
+      zypper --non-interactive install --no-recommends rsync
+      #{TEST_RUN}
+    SHELL
+  end
+
+  # openSUSE Tumbleweed — Podman 6.0.2. The published box is a snapshot, so
+  # refresh before installing anything or zypper resolves against stale
+  # metadata for a repository that has already rolled forward.
+  config.vm.define "tumbleweed" do |node|
+    node.vm.box = "opensuse/Tumbleweed.x86_64"
+    node.vm.hostname = "matrix-test-tumbleweed"
+    node.vm.network "private_network", type: "dhcp"
+    node.vm.provision "shell", inline: <<-SHELL
+      zypper --non-interactive refresh
+      zypper --non-interactive install --no-recommends rsync
+      #{TEST_RUN}
     SHELL
   end
 end

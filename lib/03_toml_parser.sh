@@ -22,7 +22,7 @@ toml_parse_file() {
     TOML_VALUES=()
 
     # Try Python 3.11+ tomllib first (fast, correct)
-    if _toml_parse_python "$file" 2>/dev/null; then
+    if _toml_parse_python "$file"; then
         log_debug "TOML parsed via Python tomllib"
         return 0
     fi
@@ -57,8 +57,19 @@ toml_get_array() {
 
 # --- Python backend ---
 
+# True when python3 exists and is new enough to have tomllib (3.11+).
+# Probing up front keeps the expected "old interpreter" case silent, so the
+# only thing that can reach the terminal from the backend is a real failure.
+_toml_python_available() {
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 -c 'import tomllib' >/dev/null 2>&1
+}
+
 _toml_parse_python() {
     local file="$1"
+
+    _toml_python_available || return 1
+
     local py_script
     py_script=$(cat << 'PYTHON'
 import sys, tomllib, json
@@ -86,11 +97,20 @@ for k, v in flatten(data).items():
 PYTHON
     )
 
+    # An assignment in an `if` condition is exempt from errexit, so the failure
+    # has to be handled here or execution falls through into the read loop.
     local output
-    output=$(python3 -c "$py_script" "$file")
+    output=$(python3 -c "$py_script" "$file") || {
+        log_warn "tomllib failed to parse $file; falling back to Bash parser"
+        return 1
+    }
+
     local line key val
     while IFS= read -r line; do
         key="${line%%=*}"
+        # An empty parse yields one empty line; an empty subscript is a fatal
+        # Bash error, so never let one reach the array.
+        [[ -z "$key" ]] && continue
         val="${line#*=}"
         TOML_VALUES["$key"]="$val"
     done <<< "$output"

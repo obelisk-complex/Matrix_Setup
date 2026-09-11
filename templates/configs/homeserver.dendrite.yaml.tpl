@@ -32,7 +32,24 @@ global:
     enabled: true
     cache_size: 256
     cache_lifetime: "5m"
+
+app_service_api:
+  database:
+    connection_string: "postgresql://{{DB_USER}}:{{DB_PASSWORD}}@{{DB_HOST}}:{{DB_PORT}}/{{DB_NAME}}?sslmode=disable"
+
+client_api:
+  # registration_disabled is true to CLOSE registration (setup/config/
+  # config_clientapi.go). Shared-secret registration still works when it is
+  # true, which is how create-account makes the admin account.
+  registration_disabled: {{REGISTRATION_DISABLED}}
+  registration_shared_secret: "{{REGISTRATION_SHARED_SECRET}}"
+  rate_limiting:
+    enabled: true
+    threshold: 20
+    cooloff_ms: 500
 {{#TURN}}
+  # TURN is a client_api option in Dendrite; global has no turn key, so a block
+  # placed there is parsed and discarded.
   turn:
     turn_uris:
       - "{{TURN_URI_UDP}}"
@@ -41,18 +58,6 @@ global:
     turn_shared_secret: "{{TURN_SHARED_SECRET}}"
     turn_user_lifetime: "24h"
 {{/TURN}}
-
-app_service_api:
-  database:
-    connection_string: "postgresql://{{DB_USER}}:{{DB_PASSWORD}}@{{DB_HOST}}:{{DB_PORT}}/{{DB_NAME}}?sslmode=disable"
-
-client_api:
-  registration_disabled: {{ENABLE_REGISTRATION}}
-  registration_shared_secret: "{{REGISTRATION_SHARED_SECRET}}"
-  rate_limiting:
-    enabled: true
-    threshold: 20
-    cooloff_ms: 500
 
 federation_api:
 {{#FEDERATION}}

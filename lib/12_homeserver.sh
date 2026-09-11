@@ -42,6 +42,14 @@ _homeserver_synapse() {
     hs_vars[FORM_SECRET]="${CONFIG[secrets.form_secret]:-GENERATE_ME}"
     hs_vars[SIGNING_KEY_PATH]="/data/signing-keys/${domain}.signing.key"
 
+    # web_client_location only makes sense when we deploy a web client
+    if [[ -n "${CONFIG[webclient.type]:-}" && "${CONFIG[webclient.type]}" != "none" ]]; then
+        hs_vars[WEBCLIENT]="true"
+        hs_vars[WEBCLIENT_SUBDOMAIN]="${CONFIG[webclient.subdomain]:-chat}"
+    else
+        hs_vars[WEBCLIENT]="false"
+    fi
+
     # Registration policy
     local reg="${CONFIG[registration.policy]:-invite-only}"
     case "$reg" in
@@ -104,10 +112,27 @@ _homeserver_synapse() {
     template_render \
         "${SCRIPT_DIR}/templates/configs/homeserver.synapse.yaml.tpl" \
         "$config_dir/homeserver.yaml" \
-        hs_vars
+        hs_vars || return 1
 
     rollback_snapshot "homeserver" "FILE_CREATED" "$config_dir/homeserver.yaml"
     log_substep "Synapse config written to $config_dir/homeserver.yaml"
+
+    # log_config in homeserver.yaml points Synapse at the file that
+    # templates/compose/synapse.yml bind-mounts here. podman-run(1), --volume:
+    # "If the source does not exist, Podman returns an error. Users must
+    # pre-create the source files or directories."
+    template_render \
+        "${SCRIPT_DIR}/templates/configs/log.config.tpl" \
+        "$config_dir/log.config" \
+        hs_vars || return 1
+
+    # No secrets in it, and podman-run(1) notes that with a user namespace in
+    # use "the UID and GID in the container may correspond to another UID and
+    # GID on the host", so the reader inside the container is not the owner.
+    chmod 644 "$config_dir/log.config"
+
+    rollback_snapshot "homeserver" "FILE_CREATED" "$config_dir/log.config"
+    log_substep "Synapse logging config written to $config_dir/log.config"
 
     # Ensure signing key directory is owned by matrix user
     log_substep "Signing key will be stored at $data_dir/signing-keys/"
@@ -128,14 +153,15 @@ _homeserver_dendrite() {
 
     hs_vars[SIGNING_KEY_PATH]="/etc/dendrite/matrix_key.pem"
 
-    # Registration
+    # Registration. Dendrite's knob is registration_disabled, the inverse of
+    # Synapse's enable_registration, so the value is built the other way up.
     local reg="${CONFIG[registration.policy]:-invite-only}"
     case "$reg" in
         closed|invite-only)
-            hs_vars[ENABLE_REGISTRATION]="false"
+            hs_vars[REGISTRATION_DISABLED]="true"
             ;;
         open-email|open-captcha)
-            hs_vars[ENABLE_REGISTRATION]="true"
+            hs_vars[REGISTRATION_DISABLED]="false"
             ;;
     esac
 
@@ -149,7 +175,7 @@ _homeserver_dendrite() {
     template_render \
         "${SCRIPT_DIR}/templates/configs/homeserver.dendrite.yaml.tpl" \
         "$config_dir/dendrite.yaml" \
-        hs_vars
+        hs_vars || return 1
 
     rollback_snapshot "homeserver" "FILE_CREATED" "$config_dir/dendrite.yaml"
     log_substep "Dendrite config written to $config_dir/dendrite.yaml"
@@ -161,6 +187,7 @@ _homeserver_common_vars() {
     local -n _vars="$1"
     local domain="${CONFIG[domain.name]}"
 
+    _vars[MATRIX_SETUP_VERSION]="$MATRIX_SETUP_VERSION"
     _vars[SERVER_NAME]="$domain"
     _vars[DOMAIN]="$domain"
     _vars[REGISTRATION_SHARED_SECRET]="${CONFIG[secrets.registration_shared_secret]:-GENERATE_ME}"

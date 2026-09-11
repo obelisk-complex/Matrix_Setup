@@ -29,9 +29,16 @@ PODMAN_VERSION=""
 PODMAN_STORAGE_DRIVER=""
 
 detect_os() {
-    if [[ -f /etc/os-release ]]; then
+    # Overridable so tests can drive the whole distro matrix from fixtures
+    # instead of only whatever the host happens to be.
+    local os_release="${OS_RELEASE_FILE:-/etc/os-release}"
+    if [[ -f "$os_release" ]]; then
+        # Sourcing leaks ID/VERSION_ID/PRETTY_NAME into the caller, so a second
+        # detect_os against a file that omits one of them would otherwise
+        # inherit the previous value.
+        local ID="" VERSION_ID="" PRETTY_NAME=""
         # shellcheck source=/dev/null
-        . /etc/os-release
+        . "$os_release"
         OS_ID="${ID:-unknown}"
         OS_VERSION="${VERSION_ID:-unknown}"
         OS_PRETTY="${PRETTY_NAME:-$OS_ID $OS_VERSION}"
@@ -168,10 +175,17 @@ detect_podman() {
 }
 
 detect_compose_command() {
-    # Prefer podman compose (v5+ built-in) > podman-compose (Python) > docker-compose
+    # Prefer podman compose (v5+ built-in) > our pinned virtualenv >
+    # podman-compose on PATH > docker-compose
     if podman compose version &>/dev/null 2>&1; then
         COMPOSE_CMD="podman compose"
         COMPOSE_NETWORKING="dns"  # service-name-based networking
+    elif [[ -x "${PODMAN_COMPOSE_VENV_BIN:-}" ]]; then
+        # Absolute path on purpose: the virtualenv is not on the PATH of the
+        # matrix user that run_as_user switches to, and systemd rejects a
+        # non-absolute ExecStart in the generated Quadlet units.
+        COMPOSE_CMD="$PODMAN_COMPOSE_VENV_BIN"
+        COMPOSE_NETWORKING="pod"
     elif check_command podman-compose; then
         COMPOSE_CMD="podman-compose"
         COMPOSE_NETWORKING="pod"  # pod-based, use localhost

@@ -369,28 +369,64 @@ wizard_step_hardening() {
     confirm_prompt "  Install fail2ban?" "y" && CONFIG[hardening.fail2ban]="true" || CONFIG[hardening.fail2ban]="false"
     confirm_prompt "  Apply sysctl tuning?" "y" && CONFIG[hardening.sysctl]="true" || CONFIG[hardening.sysctl]="false"
     confirm_prompt "  Enable auto-updates?" "y" && CONFIG[hardening.auto_updates]="true" || CONFIG[hardening.auto_updates]="false"
+
+    # The three below default to what the server already does, so answering
+    # "yes, keep it as it is" to all of them leaves the install unchanged.
+    if [[ "${CONFIG[hardening.ssh]:-true}" == "true" ]]; then
+        echo ""
+        log_substep "SSH tunnelling lets you reach things on this server through your SSH"
+        log_substep "connection — the admin panel, Grafana, a database client. Turning it off"
+        log_substep "does not stop you logging in, only tunnelling."
+        confirm_prompt "  Keep SSH tunnelling available?" "y" \
+            && CONFIG[hardening.ssh_tcp_forwarding]="true" \
+            || CONFIG[hardening.ssh_tcp_forwarding]="false"
+    fi
+
+    if [[ "${CONFIG[hardening.sysctl]:-true}" == "true" ]]; then
+        echo ""
+        log_substep "Randomised IPv6 addresses hide which machine started an outgoing"
+        log_substep "connection. Worth it if this server is at home; on a hosted server it"
+        log_substep "just means your outgoing traffic stops matching your DNS record."
+        confirm_prompt "  Use randomised IPv6 addresses for outgoing connections?" "n" \
+            && CONFIG[hardening.ipv6_privacy]="true" \
+            || CONFIG[hardening.ipv6_privacy]="false"
+
+        echo ""
+        log_substep "On a busy server, relayed voice and video calls can exhaust the kernel's"
+        log_substep "connection tracking table and calls start dropping. Raising the limit"
+        log_substep "costs a little memory. Say no unless you have seen that happen."
+        if confirm_prompt "  Raise the connection tracking limit?" "n"; then
+            CONFIG[hardening.conntrack_max]=$(prompt_value "    Connections to track" "131072")
+        else
+            CONFIG[hardening.conntrack_max]=""
+        fi
+    fi
 }
 
 # --- Step 15: Existing Proxy ---
 wizard_step_proxy() {
     log_step "Reverse Proxy"
 
-    # Auto-detect existing proxy
+    # proxy_detect records the outcome in CONFIG[proxy.external] and prompts for
+    # it itself when something is already bound to 80/443. Asking a second
+    # question here put a contradictory answer over the top of the first: the
+    # unconditional "false" below the old prompt discarded a "skip Caddy" choice.
     if declare -f proxy_detect &>/dev/null; then
         proxy_detect
     fi
 
-    if [[ "${CONFIG[proxy.detected]:-}" != "" ]]; then
-        log_substep "Detected existing proxy: ${CONFIG[proxy.detected]}"
-        if confirm_prompt "Use existing proxy instead of Caddy?" "n"; then
-            CONFIG[proxy.external]="true"
-            log_substep "Caddy will be skipped. Config snippets will be generated."
-            return 0
-        fi
+    if [[ "${CONFIG[proxy.external]:-false}" == "true" ]]; then
+        log_substep "Caddy skipped; ${CONFIG[proxy.detected]:-the existing proxy} will front the homeserver."
+        log_substep "Config snippets have been written to the install directory."
+        return 0
     fi
 
     CONFIG[proxy.external]="false"
-    log_substep "Caddy will handle HTTPS and reverse proxying"
+    if [[ -n "${CONFIG[caddy.http_port]:-}" ]]; then
+        log_substep "Caddy will handle HTTPS on ports ${CONFIG[caddy.http_port]}/${CONFIG[caddy.https_port]:-8443}"
+    else
+        log_substep "Caddy will handle HTTPS and reverse proxying"
+    fi
 }
 
 # --- Step 16: Secrets Mode ---

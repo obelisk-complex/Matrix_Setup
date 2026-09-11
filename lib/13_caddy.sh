@@ -6,6 +6,15 @@ set -euo pipefail
 caddy_setup() {
     log_step "Configuring Caddy reverse proxy"
 
+    # proxy_detect() decided an existing proxy keeps 80/443, so compose_assemble
+    # omits the Caddy fragment. Writing a Caddyfile for a container that is
+    # never created would only mislead whoever reads the install directory.
+    if [[ "${CONFIG[proxy.external]:-false}" == "true" ]]; then
+        log_substep "Skipped: ${CONFIG[proxy.detected]:-an existing} proxy handles HTTPS on this host"
+        log_success "Caddy not deployed (external proxy)"
+        return 0
+    fi
+
     local install_dir="${CONFIG[install_dir]:-$DEFAULT_INSTALL_DIR}"
     local config_dir="$install_dir/config"
     local data_dir="$install_dir/data/caddy"
@@ -92,7 +101,7 @@ caddy_setup() {
     template_render \
         "${SCRIPT_DIR}/templates/configs/Caddyfile.tpl" \
         "$config_dir/Caddyfile" \
-        caddy_vars
+        caddy_vars || return 1
 
     rollback_snapshot "caddy" "FILE_CREATED" "$config_dir/Caddyfile"
     log_substep "Caddyfile written to $config_dir/Caddyfile"

@@ -213,6 +213,49 @@ config_validate() {
         done
     fi
 
+    # monitoring.grafana_subdomain: a single DNS label (RFC 1035). It reaches
+    # the compose and Caddyfile renderers raw and ends up in a hostname.
+    val="${CONFIG[monitoring.grafana_subdomain]:-}"
+    if [[ -n "$val" && ! "$val" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]]; then
+        log_error "Config: monitoring.grafana_subdomain '$val' is not a valid DNS label"
+        errors=$((errors + 1))
+    fi
+
+    # dns.cloudflare_api_token: Cloudflare tokens are URL-safe base64. The value
+    # reaches the compose and Caddyfile renderers raw, so restrict it to that
+    # alphabet. Never log the value itself.
+    # hardening.*: each switch is consumed as `== "true"`, so any other spelling
+    # ("yes", "1", "True") silently reads as "off" and quietly disables a
+    # control the operator asked for. Reject it instead.
+    for key in hardening.ssh hardening.firewall hardening.fail2ban \
+               hardening.sysctl hardening.auto_updates \
+               hardening.ssh_tcp_forwarding hardening.ipv6_privacy; do
+        val="${CONFIG[$key]:-}"
+        if [[ -n "$val" && "$val" != "true" && "$val" != "false" ]]; then
+            log_error "Config: $key must be true or false, got '$val'"
+            errors=$((errors + 1))
+        fi
+    done
+
+    # hardening.conntrack_max: reaches a sysctl assignment. Upper bound is a
+    # sanity check, not a kernel limit — a table this large is a typo, not a plan.
+    val="${CONFIG[hardening.conntrack_max]:-}"
+    if [[ -n "$val" ]]; then
+        if [[ ! "$val" =~ ^[0-9]+$ ]]; then
+            log_error "Config: hardening.conntrack_max must be a positive integer, got '$val'"
+            errors=$((errors + 1))
+        elif (( 10#$val < 1024 || 10#$val > 4194304 )); then
+            log_error "Config: hardening.conntrack_max must be in range 1024-4194304, got '$val'"
+            errors=$((errors + 1))
+        fi
+    fi
+
+    val="${CONFIG[dns.cloudflare_api_token]:-}"
+    if [[ -n "$val" && ! "$val" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        log_error "Config: dns.cloudflare_api_token must match ^[A-Za-z0-9._-]+\$"
+        errors=$((errors + 1))
+    fi
+
     (( errors == 0 ))
 }
 
@@ -281,6 +324,13 @@ _config_apply_defaults() {
     : "${CONFIG[hardening.fail2ban]:=true}"
     : "${CONFIG[hardening.sysctl]:=true}"
     : "${CONFIG[hardening.auto_updates]:=true}"
+    # These three default to what an install already does, so upgrading without
+    # editing the config changes nothing: SSH forwarding stays as the operator's
+    # own sshd_config has it, IPv6 privacy addresses stay off, and the conntrack
+    # table size is left to the kernel.
+    : "${CONFIG[hardening.ssh_tcp_forwarding]:=true}"
+    : "${CONFIG[hardening.ipv6_privacy]:=false}"
+    : "${CONFIG[hardening.conntrack_max]:=}"
     : "${CONFIG[secrets.mode]:=env}"
     : "${CONFIG[install_dir]:=$DEFAULT_INSTALL_DIR}"
     : "${CONFIG[matrix_user]:=$DEFAULT_MATRIX_USER}"
