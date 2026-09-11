@@ -141,6 +141,22 @@ ipv6_privacy = false
 # first try; leave it unset to let the kernel decide.
 # conntrack_max = 131072
 
+# --- Existing reverse proxy ---
+# This only applies when setup finds a web server already holding ports 80/443
+# and leaves it in charge instead of deploying Caddy. When that happens the
+# homeserver's port is published on the address below so your nginx, Apache or
+# Traefik has something to connect to, and the config snippets setup writes for
+# you point at that same address.
+# The default keeps the port on the loopback interface: any program running on
+# this machine can reach it, and nothing on the network can. Change it only if
+# your proxy runs on another machine or somewhere loopback will not reach it.
+# Whatever address you give, anything that can reach it can talk to your
+# homeserver directly, unencrypted and with nothing in front of it, so give the
+# narrowest address that works. "0.0.0.0" means every interface, which on a
+# server with a public IP address means the whole internet.
+[proxy]
+bind_address = "127.0.0.1"
+
 # --- Secrets ---
 [secrets]
 mode = "env"        # "env" (.env file) or "podman" (Podman native secrets)
@@ -150,7 +166,3 @@ mode = "env"        # "env" (.env file) or "podman" (Podman native secrets)
 podman_compose_command = "auto"  # "auto", "podman compose", "podman-compose", "docker-compose"
 # install_dir = "/opt/matrix"
 # matrix_user = "matrix"
-
-# --- DNS (optional) ---
-# [dns]
-# cloudflare_api_token = ""  # For automatic DNS record creation + DNS-01 ACME challenge

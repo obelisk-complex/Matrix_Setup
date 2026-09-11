@@ -1,0 +1,52 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "timezone": "Etc/UTC",
+  "schedule": ["before 6am on monday"],
+  "dependencyDashboard": true,
+  "prConcurrentLimit": 5,
+  "minimumReleaseAge": "3 days",
+  "customManagers": [
+    {
+      "description": "Container image pins in lib/00_constants.sh. No packaging manifest exists in this repo, so the constants file is the manifest; the regex must stay in step with the `readonly NAME_IMAGE=\"registry/repo:tag@sha256:...\"` shape that scripts/pin-digests.sh also parses.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^lib/00_constants\\.sh$/"],
+      "matchStrings": [
+        "readonly [A-Z0-9_]+_IMAGE=\"(?<depName>[^\":@]+):(?<currentValue>[^\"@]+)@(?<currentDigest>sha256:[0-9a-f]{64})\""
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Keep actions on a commit SHA with the tag in a trailing comment, which is how they are pinned today.",
+      "matchManagers": ["github-actions"],
+      "pinDigests": true
+    },
+    {
+      "description": "Digest-only rebuilds of an unchanged tag are what scripts/pin-digests.sh --check already catches weekly; grouping them keeps that noise to one PR.",
+      "matchManagers": ["custom.regex"],
+      "matchUpdateTypes": ["digest"],
+      "groupName": "container image digests"
+    },
+    {
+      "description": "Synapse config keys and its PostgreSQL floor have both changed inside the 1.x line, and neither is visible to Renovate.",
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["docker.io/matrixdotorg/synapse"],
+      "matchUpdateTypes": ["major", "minor"],
+      "prBodyNotes": [
+        ":warning: Read https://github.com/element-hq/synapse/blob/develop/docs/upgrade.md between the old and new version before merging. Synapse states breaking changes there, not in the release title. Check in particular for config keys `templates/configs/homeserver.synapse.yaml.tpl` sets, and for a PostgreSQL floor change (`MIN_PG_VERSION` in `lib/00_constants.sh`, asserted by `tests/test_version_floors.sh`)."
+      ]
+    },
+    {
+      "description": "PostgreSQL major upgrades need a dump and restore; lib/26_upgrade.sh aborts rather than performing one.",
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["docker.io/postgres"],
+      "matchUpdateTypes": ["major"],
+      "prBodyNotes": [
+        ":warning: A PostgreSQL major bump strands every existing deployment: `upgrade_check` refuses to proceed when the data directory's major differs from the image. Do not merge without a migration path."
+      ]
+    }
+  ]
+}

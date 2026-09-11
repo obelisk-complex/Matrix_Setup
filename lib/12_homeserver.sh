@@ -239,6 +239,15 @@ homeserver_add_appservice() {
     fi
 
     local hs_type="${CONFIG[homeserver.type]:-synapse}"
+    if [[ "$hs_type" != "synapse" ]]; then
+        # Reporting success here would leave a bridge deployed, running and
+        # unknown to the homeserver. Registration for Dendrite is not
+        # implemented; `bridges_setup` and `config_validate` both refuse the
+        # combination earlier, so this is the backstop rather than the gate.
+        log_error "Appservice registration is not implemented for '$hs_type'; $registration_file was NOT registered"
+        return 1
+    fi
+
     if [[ "$hs_type" == "synapse" ]]; then
         # Append to app_service_config_files list in homeserver.yaml
         if grep -q "^app_service_config_files:" "$hs_config"; then

@@ -49,6 +49,7 @@ report_generate() {
             echo "  STUN:           ${PORT_STUN}"
             echo "  STUN TLS:       ${PORT_STUN_TLS}"
             echo "  TURN relay:     ${CONFIG[coturn.min_port]:-$PORT_COTURN_MIN}-${CONFIG[coturn.max_port]:-$PORT_COTURN_MAX}"
+            echo "  Coturn:         ${CONFIG[deploy.coturn_result]:-not started}"
             echo "  TURN test:      ${CONFIG[deploy.turn_result]:-not run}"
         fi
 

@@ -41,7 +41,7 @@ bridges_setup() {
     done
 
     CONFIG[bridges.has_appservices]="true"
-    log_success "Bridges configured (${#bridge_list[@]} enabled)"
+    log_success "Bridges configured (${#BRIDGES_ENABLED[@]} configured of ${#bridge_list[@]} requested)"
 }
 
 _bridges_discover() {
@@ -113,6 +113,12 @@ _bridge_setup_single() {
     # Generate bridge tokens
     secrets_generate_bridge_tokens "$bridge_name"
 
+    # Plugins are sourced into this shell, so a function left behind by the
+    # previous plugin would be called for this one - writing the previous
+    # bridge's registration under this bridge's name.
+    unset -f bridge_name bridge_description bridge_image bridge_requires_synapse \
+             bridge_generate_registration bridge_compose_fragment
+
     # Source plugin and call its functions
     # shellcheck source=/dev/null
     source "$plugin"
@@ -131,7 +137,13 @@ _bridge_setup_single() {
         rollback_snapshot "bridges" "FILE_CREATED" "$appservice_dir/${bridge_name}-registration.yaml"
 
         # Register with homeserver
-        homeserver_add_appservice "/data/appservices/${bridge_name}-registration.yaml"
+        if ! homeserver_add_appservice "/data/appservices/${bridge_name}-registration.yaml"; then
+            log_error "Bridge '$bridge_name' was not registered with the homeserver; not enabling it"
+            return 1
+        fi
+    else
+        log_warn "Bridge plugin '$bridge_name' generates no registration; not enabling it"
+        return 0
     fi
 
     # Store image for compose assembly

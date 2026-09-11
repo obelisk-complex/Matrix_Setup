@@ -4,6 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Called by release.yml so a tag push runs the same gates as main. A tag is
+  # not a branch, so the `push` trigger above never fires for `v*`.
+  workflow_call:
+  # Upstream digest drift happens without anyone committing, so the image-pins
+  # job needs a trigger that is not tied to a change of ours.
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,16 +19,83 @@ permissions:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    # The suite runs in well under a minute. A test that blocks on stdin or on
+    # a stub that never returns would otherwise sit on GitHub's 360-minute
+    # default; fail fast instead.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
 
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      # python3-yaml is not optional: see "Assert PyYAML is importable" below.
+      - name: Install shellcheck and PyYAML
+        run: sudo apt-get update && sudo apt-get install -y shellcheck python3-yaml
 
+      # -P lets shellcheck resolve `source "$LIB_DIR/..."` targets instead of
+      # emitting SC1091 and giving up on the sourced file. Without it the gate
+      # analyses each script in isolation and cannot see cross-file problems.
       - name: ShellCheck (severity=warning)
         run: |
           mapfile -t files < <(find . -type f -name '*.sh' -not -path './.git/*')
-          shellcheck --severity=warning -x "${files[@]}"
+          shellcheck --severity=warning -x -P "SCRIPTDIR:lib:tests:scripts:." "${files[@]}"
+
+      # tests/test_compose_assembly.sh guards its compose-parse assertions
+      # behind `python3 -c 'import yaml'` and calls skip_test when the import
+      # fails. Those assertions are the regression test for compose fragments
+      # collapsing to a single service. A run without PyYAML skips them and
+      # still reports success, so assert the import up front rather than
+      # discovering it in the skip count.
+      - name: Assert PyYAML is importable
+        run: python3 -c 'import yaml; print("PyYAML", yaml.__version__)'
 
       - name: Run test suite
-        run: bash tests/test_runner.sh
+        run: |
+          set -o pipefail
+          bash tests/test_runner.sh 2>&1 | tee "$RUNNER_TEMP/test-output.txt"
+
+      # Belt and braces for the step above: if the guard ever trips for a
+      # reason the import assertion does not cover, the suite still exits 0
+      # with the assertions skipped. Treat that as a failure.
+      - name: Fail if the compose parse assertions were skipped
+        run: |
+          marker='python3 with PyYAML not available'
+          # A grep that matches nothing passes vacuously, so first prove the
+          # marker still exists in the test file it is meant to watch.
+          if ! grep -qF "$marker" tests/test_compose_assembly.sh; then
+            echo "::error file=tests/test_compose_assembly.sh::skip marker '$marker' no longer present; this check verifies nothing and must be updated"
+            exit 1
+          fi
+          if grep -qF "$marker" "$RUNNER_TEMP/test-output.txt"; then
+            echo "::error file=tests/test_compose_assembly.sh::compose_assemble parse assertions were skipped, not run — the regression test for fragment collapse did not execute"
+            exit 1
+          fi
+          echo "compose_assemble parse assertions ran."
+
+  image-pins:
+    # docs/SUPPLY_CHAIN.md documents `pin-digests.sh --check` as the step to run
+    # after any image version bump. Running it only on a `v*` tag left that
+    # unenforced between releases, so it runs here on main, on the weekly
+    # schedule, and (via workflow_call) on the release path.
+    #
+    # Not on pull_request: the pins are tag+digest against floating tags
+    # (`postgres:16-alpine` and friends), so upstream retagging makes this go
+    # red with no change on our side. That is a signal worth having on main and
+    # before a release, but turning a contributor's PR red for an unrelated
+    # upstream push is not. Consequence: a PR that adds an unpinned *_IMAGE is
+    # only caught once it lands on main.
+    #
+    # Separate job so a registry outage is distinguishable from a lint or test
+    # failure, and so the two run concurrently.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    # One HTTP round trip per image; a hung registry connection should not hold
+    # the job open.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Verify pinned image digests match upstream
+        run: bash scripts/pin-digests.sh --check

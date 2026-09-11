@@ -89,7 +89,7 @@ A modular Bash setup script that deploys a complete Matrix communication stack (
 
 | ID | Requirement | Target | Measurement |
 |----|-------------|--------|-------------|
-| NFR-01 | **Cross-distro compatibility** | Ubuntu 24.04+, Debian 13+, Fedora 41+, CentOS Stream 9, RHEL 9, Arch, openSUSE Leap 15.6+, openSUSE Tumbleweed. Ubuntu 22.04 (Podman 3.4.4) and Debian 12 (Podman 4.3.1) are excluded by NFR-02. Lowest shipped version in the supported set is 4.8.3 (openSUSE Leap 15.6). | Script completes successfully on each distro in a clean VM |
+| NFR-01 | **Cross-distro compatibility** | Ubuntu 24.04+, Debian 13+, Fedora 43+, CentOS Stream 9, RHEL 9, Arch, openSUSE Leap 15.6+, openSUSE Tumbleweed. Ubuntu 22.04 (Podman 3.4.4) and Debian 12 (Podman 4.3.1) are excluded by NFR-02. Fedora 41 and 42 clear NFR-02 (Podman 5.2.5 and 5.4.1) but are excluded as end of life (2025-12-15 and 2026-05-27), so they receive no security updates. Lowest shipped version in the supported set is 4.8.3 (openSUSE Leap 15.6). | Script completes successfully on each distro in a clean VM |
 | NFR-02 | **Podman version** | Minimum 4.7.0 (Quadlet 4.4.0 + `podman secret inspect --showsecret` 4.7.0), recommended 5.0.0+ | Script checks version, refuses < 4.7.0, warns < 5.0.0 |
 | NFR-03 | **Setup completion time** | < 15 minutes on a 2-core VPS with decent network | Timed end-to-end from script start to post-install report |
 | NFR-04 | **TLS security** | TLS 1.2+ only, HSTS enabled, strong ciphers | SSL Labs / testssl.sh scan grade A or higher |

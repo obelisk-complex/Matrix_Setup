@@ -145,7 +145,9 @@ assert_file_contains() {
 
     _TEST_NUM=$((_TEST_NUM + 1))
 
-    if grep -q "$pattern" "$file" 2>/dev/null; then
+    # `--` so a pattern that starts with a dash (a command-line flag being
+    # asserted on) is not parsed by grep as an option.
+    if grep -q -- "$pattern" "$file" 2>/dev/null; then
         echo "ok $_TEST_NUM - $description"
     else
         echo "not ok $_TEST_NUM - $description"

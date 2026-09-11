@@ -66,6 +66,18 @@ assert_eq "1" "$(_check "$root")" "--check fails when the pinned digest differs 
 assert_file_contains "$root/out.txt" "DRIFT: SYNAPSE_IMAGE" \
     "--check names the drifted image"
 
+# --- Test: a drift failure says what to do about it ---
+# Drift is a routine upstream event (a rebuilt tag) as often as a hostile one,
+# so the gate stays a failure but has to be cheap to act on: the maintainer
+# needs the re-pin command, not just a mismatch dump.
+root=$(_make_tree drift_msg "readonly SYNAPSE_IMAGE=\"docker.io/matrixdotorg/synapse:v1.0.0@sha256:2222222222222222222222222222222222222222222222222222222222222222\"
+readonly CADDY_IMAGE=\"docker.io/library/caddy:2.11.4@sha256:3333333333333333333333333333333333333333333333333333333333333333\"")
+assert_eq "1" "$(_check "$root")" "--check fails when several images drift"
+assert_file_contains "$root/out.txt" "2 image(s) drifted" \
+    "--check reports how many images drifted"
+assert_file_contains "$root/out.txt" "scripts/pin-digests.sh" \
+    "--check names the command that re-pins them"
+
 # --- Test: an unpinned image is drift ---
 root=$(_make_tree unpinned 'readonly SYNAPSE_IMAGE="docker.io/matrixdotorg/synapse:v1.0.0"')
 assert_eq "1" "$(_check "$root")" "--check fails when an image is not digest-pinned"

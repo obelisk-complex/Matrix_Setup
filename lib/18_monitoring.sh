@@ -33,12 +33,26 @@ _monitoring_prometheus_config() {
     local config_dir="$1"
     local hs_type="${CONFIG[homeserver.type]:-synapse}"
 
-    local hs_target
-    if [[ "${COMPOSE_NETWORKING:-dns}" == "pod" ]]; then
-        hs_target="localhost:9000"
+    # Synapse gets a dedicated `type: metrics` listener on 9000 and serves
+    # /_synapse/metrics there. Dendrite has no metrics listener: with
+    # global.metrics.enabled it serves /metrics on its ordinary HTTP port
+    # (reported by work-dendrite from `setup/base/base.go`, Dendrite v0.14.1).
+    local hs_port hs_metrics_path
+    if [[ "$hs_type" == "dendrite" ]]; then
+        hs_port="$PORT_DENDRITE"
+        hs_metrics_path="/metrics"
     else
-        hs_target="homeserver:9000"
+        hs_port="9000"
+        hs_metrics_path="/_synapse/metrics"
     fi
+
+    local hs_host
+    if [[ "${COMPOSE_NETWORKING:-dns}" == "pod" ]]; then
+        hs_host="localhost"
+    else
+        hs_host="homeserver"
+    fi
+    local hs_target="${hs_host}:${hs_port}"
 
     cat > "$config_dir/prometheus.yml" << PROMYML
 # Prometheus configuration
@@ -54,7 +68,7 @@ scrape_configs:
       - targets: ['localhost:9090']
 
   - job_name: '${hs_type}'
-    metrics_path: '/_synapse/metrics'
+    metrics_path: '${hs_metrics_path}'
     static_configs:
       - targets: ['${hs_target}']
     scrape_interval: 15s

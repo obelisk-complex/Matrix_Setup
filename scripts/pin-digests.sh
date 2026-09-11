@@ -115,9 +115,9 @@ for name in $(printf '%s\n' "${!CURRENT[@]}" | sort); do
     if [[ "$MODE" == "--check" ]]; then
         have="${ref##*@}"
         if [[ "$ref" != *@* ]]; then
-            echo "  DRIFT: $name is not digest-pinned" >&2; drift=1
+            echo "  DRIFT: $name is not digest-pinned" >&2; drift=$((drift + 1))
         elif [[ "$have" != "$digest" ]]; then
-            echo "  DRIFT: $name pinned $have but upstream is $digest" >&2; drift=1
+            echo "  DRIFT: $name pinned $have but upstream is $digest" >&2; drift=$((drift + 1))
         fi
     fi
 done
@@ -131,7 +131,18 @@ if (( ${#FAILED[@]} > 0 )); then
 fi
 
 if [[ "$MODE" == "--check" ]]; then
-    (( drift == 0 )) && echo "OK: all image digests match upstream." || exit 1
+    # Drift stays a hard failure: a tag moving under a pin is the event pinning
+    # exists to catch, and a release is a deliberate act, so the pins that ship
+    # are the pins someone looked at. What the gate owes the maintainer is a
+    # cheap next step rather than a mismatch dump.
+    if (( drift > 0 )); then
+        echo "" >&2
+        echo "ERROR: $drift image(s) drifted from the digests pinned in lib/00_constants.sh." >&2
+        echo "Upstream moved a tag. Review what changed, then re-pin deliberately:" >&2
+        echo "  scripts/pin-digests.sh && git diff lib/00_constants.sh" >&2
+        exit 1
+    fi
+    echo "OK: all image digests match upstream."
     exit 0
 fi
 

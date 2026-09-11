@@ -542,5 +542,175 @@ for tcp in true false; do
     done
 done
 
+# =====================================================================
+# SSH lockout guard: the key has to belong to the account that will need
+# to get back in
+# =====================================================================
+# The drop-in harden_ssh writes sets PasswordAuthentication no and
+# PermitRootLogin no, so the only remaining route in is a key on the account
+# the operator logs in as: $SUDO_USER when they sudo'd, root when they did not.
+# The guard used to accept a key belonging to any account on the box, which
+# passes precisely for the operator it exists to protect: one sudo-ing from a
+# keyless account on a machine where somebody else happens to have a key.
+
+ssh_homes="$TEST_TMP/ssh-homes"
+mkdir -p "$ssh_homes/opsuser/.ssh" "$ssh_homes/bystander/.ssh" "$ssh_homes/root/.ssh"
+
+# Stands in for the getent passwd home column, including its failure for an
+# account that does not exist. Restored at the end of the block.
+#
+# Every lookup is logged to a file rather than a counter variable: the guard
+# calls this as home=$(get_user_home ...), so anything the stub assigns dies
+# with the subshell. The log is what makes "another user's key was not
+# consulted" a claim about the code rather than about this host's /home.
+ssh_home_lookups="$TEST_TMP/ssh-home-lookups"
+: > "$ssh_home_lookups"
+real_get_user_home="$(declare -f get_user_home)"
+get_user_home() {
+    printf '%s\n' "$1" >> "$ssh_home_lookups"
+    [[ -d "$ssh_homes/$1" ]] || return 1
+    printf '%s\n' "$ssh_homes/$1"
+}
+
+# The set of accounts the guard resolved a home for, deduplicated, one line.
+ssh_homes_consulted() { sort -u "$ssh_home_lookups" | paste -sd, -; }
+
+ssh_key_line='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINotARealKeyForTestsOnly000000000000 test@example'
+
+# Only the bystander has a key; the operator sudo'd from a keyless account.
+printf '%s\n' "$ssh_key_line" > "$ssh_homes/bystander/.ssh/authorized_keys"
+: > "$ssh_homes/opsuser/.ssh/authorized_keys"
+: > "$ssh_homes/root/.ssh/authorized_keys"
+
+SUDO_USER="opsuser"
+: > "$ssh_home_lookups"
+assert_false "an unrelated user's key does not satisfy the SSH guard" _ssh_has_authorized_key
+assert_eq "opsuser" "$(ssh_homes_consulted)" \
+    "the guard consulted exactly one account, the sudo-ing user's"
+
+printf '%s\n' "$ssh_key_line" > "$ssh_homes/opsuser/.ssh/authorized_keys"
+assert_true "the sudo-ing user's own key satisfies the SSH guard" _ssh_has_authorized_key
+
+# root's key deliberately does not stand in for the sudo-ing user's: the
+# drop-in sets PermitRootLogin no, so a root key stops being a way in the
+# moment it lands. Refusing here skips the lockdown and says why, so the cost
+# of being wrong is an unhardened sshd, never a locked-out operator.
+: > "$ssh_homes/opsuser/.ssh/authorized_keys"
+printf '%s\n' "$ssh_key_line" > "$ssh_homes/root/.ssh/authorized_keys"
+: > "$ssh_home_lookups"
+assert_false "root's key does not stand in for the sudo-ing user's" _ssh_has_authorized_key
+assert_eq "opsuser" "$(ssh_homes_consulted)" "root's home was never even looked up"
+
+# Run directly as root (no sudo): root is the account whose key is looked for.
+# Whether that key is *enough* is a separate question, decided by
+# _ssh_lockdown_is_safe further down; this one only asks whose home was read.
+unset SUDO_USER
+: > "$ssh_home_lookups"
+assert_true "root's own key satisfies the guard when run as root" _ssh_has_authorized_key
+assert_eq "root" "$(ssh_homes_consulted)" "with no SUDO_USER the target account is root"
+
+: > "$ssh_homes/root/.ssh/authorized_keys"
+assert_false "a keyless root does not satisfy the guard" _ssh_has_authorized_key
+
+printf '# a comment\n\n   \n' > "$ssh_homes/root/.ssh/authorized_keys"
+assert_false "a comment-only authorized_keys is not a key" _ssh_has_authorized_key
+
+# sshd's default AuthorizedKeysFile names both files.
+printf '%s\n' "$ssh_key_line" > "$ssh_homes/root/.ssh/authorized_keys2"
+assert_true "a key in authorized_keys2 satisfies the guard" _ssh_has_authorized_key
+rm -f "$ssh_homes/root/.ssh/authorized_keys2"
+
+# An account with no passwd entry cannot be resolved, so there is nothing to
+# vouch for it.
+SUDO_USER="ghost"
+assert_false "an unresolvable account does not satisfy the guard" _ssh_has_authorized_key
+
+# --- End to end: the guard decides whether the drop-in is written at all ---
+# SSHD_CONFIG_DIR keeps the rendered file inside TEST_TMP; sshd and systemctl
+# are stubbed so nothing reloads a live daemon.
+SSHD_CONFIG_DIR="$TEST_TMP/sshd_config.d"
+ssh_dropin="$SSHD_CONFIG_DIR/99-matrix-hardening.conf"
+sshd() { return 0; }
+systemctl() { return 0; }
+
+SUDO_USER="opsuser"
+rm -rf "$SSHD_CONFIG_DIR"
+: > "$ssh_homes/opsuser/.ssh/authorized_keys"
+ssh_warn=$(harden_ssh 2>&1 >/dev/null)
+assert_false "no drop-in is written when only another user has a key" test -e "$ssh_dropin"
+assert_match "opsuser" "$ssh_warn" "the warning names the account that needs a key"
+
+printf '%s\n' "$ssh_key_line" > "$ssh_homes/opsuser/.ssh/authorized_keys"
+harden_ssh >/dev/null 2>&1
+assert_file_contains "$ssh_dropin" "^PasswordAuthentication no" \
+    "the drop-in is written once the sudo-ing user has a key"
+assert_file_contains "$ssh_dropin" "^PermitRootLogin no" \
+    "the drop-in still disables root login when it does apply"
+
+# --- Whether root's own key counts depends on what the drop-in will write ---
+# A root key is not evidence of continued access when the change being guarded
+# is the one that takes root's login away. The decision reads PermitRootLogin
+# out of the rendered drop-in rather than assuming a value, so it follows the
+# template instead of duplicating it.
+assert_eq "no" "$(_ssh_drop_in_permit_root)" \
+    "the shipped drop-in renders PermitRootLogin no"
+
+# The value is fixed: no config key sets it and no template block guards it.
+# Asserted across the one option that does vary the rendered file, so a future
+# conditional cannot make it true only on the default path.
+for tcp in true false; do
+    CONFIG[hardening.ssh_tcp_forwarding]="$tcp"
+    assert_eq "no" "$(_ssh_drop_in_permit_root)" \
+        "PermitRootLogin stays no with ssh_tcp_forwarding=$tcp"
+done
+CONFIG[hardening.ssh_tcp_forwarding]="true"
+
+unset SUDO_USER
+rm -rf "$SSHD_CONFIG_DIR"
+printf '%s\n' "$ssh_key_line" > "$ssh_homes/root/.ssh/authorized_keys"
+ssh_warn=$(harden_ssh 2>&1 >/dev/null)
+assert_false "a root install is refused when the drop-in would remove root's login" \
+    test -e "$ssh_dropin"
+assert_match "PermitRootLogin" "$ssh_warn" \
+    "the warning names the setting that would lock root out"
+assert_match "non-root account" "$ssh_warn" \
+    "the warning says how to get the hardening applied"
+
+# Keep root login in the rendered drop-in and the same keyed root is accepted.
+# This is what distinguishes reading the rendered value from a blanket
+# "target is root" rule.
+#
+# Done by pointing SCRIPT_DIR at a scratch copy of the template tree rather
+# than by shadowing _harden_ssh_write, so the real render path still runs.
+ssh_alt_tree="$TEST_TMP/tpl-root-login-kept"
+mkdir -p "$ssh_alt_tree/templates/hardening"
+sed 's/^PermitRootLogin no$/PermitRootLogin prohibit-password/' \
+    "$HARDENING_TPL/99-matrix-hardening.conf.tpl" \
+    > "$ssh_alt_tree/templates/hardening/99-matrix-hardening.conf.tpl"
+assert_file_contains "$ssh_alt_tree/templates/hardening/99-matrix-hardening.conf.tpl" \
+    "^PermitRootLogin prohibit-password" "the scratch template keeps root's key login"
+SCRIPT_DIR="$ssh_alt_tree"
+
+rm -rf "$SSHD_CONFIG_DIR"
+: > "$ssh_home_lookups"
+harden_ssh >/dev/null 2>&1
+assert_file_contains "$ssh_dropin" "^PermitRootLogin prohibit-password" \
+    "a drop-in that keeps root's key login is applied to a keyed root"
+assert_eq "root" "$(ssh_homes_consulted)" \
+    "and root's own home is the one that was read for that key"
+
+rm -rf "$SSHD_CONFIG_DIR"
+: > "$ssh_homes/root/.ssh/authorized_keys"
+ssh_warn=$(harden_ssh 2>&1 >/dev/null)
+assert_false "a keyless root is still refused even when root login would survive" \
+    test -e "$ssh_dropin"
+assert_match "root" "$ssh_warn" "the warning names root as the account needing a key"
+
+SCRIPT_DIR="$PROJECT_DIR"
+
+unset -f sshd systemctl get_user_home
+eval "$real_get_user_home"
+unset SUDO_USER SSHD_CONFIG_DIR
+
 teardown_test_tmp
 test_report

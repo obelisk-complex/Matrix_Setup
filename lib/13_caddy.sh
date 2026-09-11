@@ -90,12 +90,20 @@ caddy_setup() {
         caddy_vars[GRAFANA]="false"
     fi
 
-    # DNS-01 challenge fallback (e.g., behind Cloudflare proxy)
+    # DNS-01 is not offered. `acme_dns cloudflare` needs the Cloudflare DNS
+    # provider module, which is only present in a custom Caddy build; CADDY_IMAGE
+    # is the stock image, and a Caddy that cannot load the directive does not
+    # start - taking 80/443, and so the whole stack, down with it. Certificates
+    # come from HTTP-01/TLS-ALPN.
+    #
+    # dns.cloudflare_api_token no longer appears in the shipped config and
+    # nothing reads it: the one function that would have (network_cloudflare_
+    # create_records, lib/07_network.sh) has no call sites. A config carried
+    # over from an earlier version may still set it, so say plainly that it is
+    # ignored rather than leave the operator to work it out.
     if [[ -n "${CONFIG[dns.cloudflare_api_token]:-}" ]]; then
-        caddy_vars[DNS_CHALLENGE]="true"
-        caddy_vars[CF_API_TOKEN]="${CONFIG[dns.cloudflare_api_token]}"
-    else
-        caddy_vars[DNS_CHALLENGE]="false"
+        log_warn "dns.cloudflare_api_token is set but unused; you can remove it."
+        log_warn "  Certificates come from HTTP-01/TLS-ALPN, not DNS-01, and no DNS records are created."
     fi
 
     template_render \

@@ -7,21 +7,29 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write       # create the release
-  id-token: write       # keyless signing + provenance (Sigstore OIDC)
-  attestations: write   # actions/attest-build-provenance
+  contents: read
 
 jobs:
+  # ci.yml triggers on `push: branches: [main]`, and a tag is not a branch, so
+  # without this the release would sign and attest a commit that had never run
+  # lint or the test suite. A cosign bundle attests provenance, not quality.
+  # This also covers `pin-digests.sh --check` (the image-pins job), which is
+  # why the release job below no longer runs it directly.
+  verify:
+    uses: ./.github/workflows/ci.yml
+
   release:
+    needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write       # create the release
+      id-token: write       # keyless signing + provenance (Sigstore OIDC)
+      attestations: write   # actions/attest-build-provenance
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
-
-      # Fail the release if any pinned digest no longer matches upstream.
-      - name: Verify image digests
-        run: bash scripts/pin-digests.sh --check
 
       - name: Install syft
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0

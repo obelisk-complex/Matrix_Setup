@@ -40,13 +40,23 @@ coturn_setup() {
         turn_vars[IPV6]="false"
     fi
 
-    # TLS for TURNS (Caddy provides certs)
+    # TLS for TURNS. turnserver.conf names cert.pem/privkey.pem inside the
+    # mounted directory, so the pair itself is the gate: the directory existing
+    # is not enough (Caddy's own store keeps <domain>.crt/.key several levels
+    # down, which coturn cannot read under these names). Drop or symlink the
+    # pair here to turn TURNS on.
     local cert_dir="$install_dir/data/caddy/data/caddy/certificates"
-    if [[ -d "$cert_dir" ]]; then
+    if [[ -f "$cert_dir/cert.pem" && -f "$cert_dir/privkey.pem" ]]; then
         turn_vars[TLS]="true"
         turn_vars[TLS_CERT_DIR]="/etc/coturn/certs"
+        # Published so the compose fragment, the Quadlet unit and the podman
+        # run fallback all mount what this config references.
+        CONFIG[coturn.tls]="true"
+        CONFIG[coturn.cert_dir]="$cert_dir"
     else
         turn_vars[TLS]="false"
+        CONFIG[coturn.tls]="false"
+        CONFIG[coturn.cert_dir]=""
     fi
 
     template_render \

@@ -45,7 +45,7 @@ Everything runs rootless under a dedicated `matrix` system user (except Coturn, 
   | --- | --- |
   | Ubuntu 24.04 LTS or newer | 4.9.3 |
   | Debian 13 (trixie) or newer | 5.4.2 |
-  | Fedora 41 or newer | 5.6.2 (F43), 5.8.1 (F44) |
+  | Fedora 43 or newer | 5.6.2 (F43), 5.8.1 (F44) |
   | CentOS Stream 9 / RHEL 9 or newer | 5.8.5 |
   | Arch Linux | 6.1.1 (rolling) |
   | openSUSE Leap 15.6 or newer | 4.8.3 (15.6), 5.4.2 (16.0), 5.8.2 (16.1) |
@@ -53,9 +53,7 @@ Everything runs rootless under a dedicated `matrix` system user (except Coturn, 
 
   Versions are as published by each distribution's repository metadata in
   September 2026; a release only qualifies if its *own* repository meets the
-  floor below. Fedora 41 and 42 clear the floor but are past end of life and
-  their repositories are no longer carried by the mirrors, so `dnf install`
-  will not work there.
+  floor below.
 
 - Root access
 - 512 MB RAM minimum (2 GB+ recommended for Synapse)
@@ -78,6 +76,13 @@ repository if it is missing; no third-party repositories are added.
 
 Ubuntu 22.04 (Podman 3.4.4) and Debian 12 (Podman 4.3.1) are **not**
 supported. Neither has a backport that reaches the floor.
+
+Fedora 41 and 42 are **not** supported either, for a different reason: their
+Podman (5.2.5 and 5.4.1) clears the floor, but both releases are past end of
+life — [Fedora 41 on 2025-12-15, Fedora 42 on
+2026-05-27](https://endoflife.date/fedora) — so neither receives security
+updates. Hardening a server on an unpatched base is not something this
+installer will claim to do.
 
 Where a distribution packages no `podman-compose` — openSUSE Leap 16.0 and
 16.1, and Arch if neither the official repository nor the AUR works out — the

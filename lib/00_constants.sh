@@ -24,7 +24,12 @@ readonly E_USER_ABORT=130
 # reads back with. One floor rather than gating the mode separately.
 readonly MIN_PODMAN_VERSION="4.7.0"
 readonly REC_PODMAN_VERSION="5.0.0"
-readonly MIN_PG_VERSION="13"
+# Synapse v1.143.0 dropped support for PostgreSQL 13, so 14 is the floor for
+# reusing a PostgreSQL the host already runs. Dendrite tolerates older, but one
+# floor rather than branching on homeserver type; falling back to the pinned
+# containerised PostgreSQL is the safe side of the error.
+# https://github.com/element-hq/synapse/blob/v1.160.0/docs/upgrade.md#dropping-support-for-postgresql-13
+readonly MIN_PG_VERSION="14"
 
 # --- podman-compose pip fallback ---
 # Used only where the distribution packages no podman-compose (openSUSE Leap
@@ -42,10 +47,10 @@ readonly PODMAN_COMPOSE_VERSION="1.3.0"
 # source of truth; the tag is kept for human readability. Regenerate after any
 # version bump with: scripts/pin-digests.sh  (verify in CI: --check).
 # See docs/SUPPLY_CHAIN.md for SBOM/signing/provenance.
-readonly SYNAPSE_IMAGE="docker.io/matrixdotorg/synapse:v1.127.1@sha256:c3c4a9de2a0b7de37d9af8101f6196748d76cd6355e6e282d7b550dd0a833519"
+readonly SYNAPSE_IMAGE="docker.io/matrixdotorg/synapse:v1.160.0@sha256:78de1d10bef02e375f861d1cc99f8bedd9381d4f9083ea8b2c22a053477b205f"
 readonly DENDRITE_IMAGE="ghcr.io/element-hq/dendrite-monolith:v0.14.1@sha256:a0212bbbfdee8f38a1b6680eedffa3ad4d9f3cfb86c9d1f0250c8ea122d54ea2"
-readonly POSTGRES_IMAGE="docker.io/postgres:16.14-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229"
-readonly CADDY_IMAGE="docker.io/library/caddy:2.11.4-alpine@sha256:77c07d5ebfa5be9fd6c820d2094ae662c9e7eeb9bf98346b7f639900263ee2a2"
+readonly POSTGRES_IMAGE="docker.io/postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"
+readonly CADDY_IMAGE="docker.io/library/caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648"
 readonly COTURN_IMAGE="docker.io/coturn/coturn:4.9.0-alpine@sha256:229f87ef2428336ca2f4b4967a961cc6ad7aceb79277bc51f5a179606228d45f"
 readonly ELEMENT_IMAGE="docker.io/vectorim/element-web:v1.11.96@sha256:13d0ea68d7ffd7d4800b4a243cade0ec535b4ed3d8d00478ae95950b14fa634c"
 readonly CINNY_IMAGE="ghcr.io/cinnyapp/cinny:v4.12.2@sha256:985daecc69998b329f013efcf00f30087708a4ee1f18f053821b07bda04f526a"
@@ -91,6 +96,16 @@ readonly PORT_COTURN_MIN=49152
 readonly PORT_COTURN_MAX=65535
 readonly PORT_PROMETHEUS=9090
 readonly PORT_GRAFANA=3000
+# Host ports used only when an external proxy fronts the stack: with no Caddy on
+# matrix-net, the operator's own proxy can reach the containers only through a
+# published port. PORT_WEBCLIENT is the host side; the web client image itself
+# listens on 80.
+readonly PORT_WEBCLIENT=8080
+
+# --- External proxy ---
+# The homeserver port published for an external proxy is bound here, so it is
+# reachable from this host and not from the network.
+readonly DEFAULT_PROXY_BIND_ADDRESS="127.0.0.1"
 
 # --- Colors (respect NO_COLOR env var, see https://no-color.org/) ---
 if [[ -z "${NO_COLOR:-}" ]] && [[ -t 1 ]]; then

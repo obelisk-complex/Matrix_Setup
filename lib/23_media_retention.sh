@@ -131,7 +131,9 @@ WantedBy=timers.target
 UNIT
 
     chown -R "${matrix_user}:" "$timer_dir"
-    run_as_user systemctl --user enable matrix-media-cleanup.timer 2>/dev/null || true
+    chown "${matrix_user}:" "$install_dir/scripts/media-cleanup.sh"
+    systemd_user_enable_unit "$timer_dir" "matrix-media-cleanup.timer" "timers.target"
+    run_as_user systemctl --user daemon-reload 2>/dev/null || true
 
     rollback_snapshot "media" "TIMER_INSTALLED" "$timer_dir/matrix-media-cleanup.timer"
     log_substep "Media check timer installed (weekly)"

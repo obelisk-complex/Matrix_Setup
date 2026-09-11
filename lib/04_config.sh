@@ -22,8 +22,66 @@ config_load() {
         log_info "Loaded configuration from: $config_file"
     fi
 
+    # The example config nests these under [advanced], which the parser flattens
+    # to `advanced.<key>`; every consumer reads the bare key.
+    _config_alias_advanced
+
     # Apply defaults for any missing values
     _config_apply_defaults
+}
+
+# Copy the [advanced] table's non-namespaced settings onto the bare keys the
+# rest of the codebase reads. A bare key written at the top level of the file
+# wins, so an existing config that used that form keeps its meaning.
+_config_alias_advanced() {
+    local key
+    for key in install_dir matrix_user; do
+        if [[ -z "${CONFIG[$key]:-}" && -n "${CONFIG[advanced.$key]:-}" ]]; then
+            CONFIG["$key"]="${CONFIG[advanced.$key]}"
+        fi
+    done
+}
+
+# Apply advanced.podman_compose_command over the detected tool. Must run after
+# detect_compose_command, which would otherwise overwrite the operator's choice.
+# Validation restricts the value to the documented set: COMPOSE_CMD is expanded
+# unquoted at every call site.
+config_apply_compose_command() {
+    local requested="${CONFIG[advanced.podman_compose_command]:-auto}"
+    [[ "$requested" != "auto" ]] || return 0
+
+    local networking
+    case "$requested" in
+        "podman compose")
+            podman compose version &>/dev/null || {
+                log_warn "Config requests 'podman compose', which this podman does not provide; using ${COMPOSE_CMD:-none detected}"
+                return 0
+            }
+            networking="dns"
+            ;;
+        podman-compose)
+            check_command podman-compose || {
+                log_warn "Config requests 'podman-compose', which is not installed; using ${COMPOSE_CMD:-none detected}"
+                return 0
+            }
+            networking="pod"
+            ;;
+        docker-compose)
+            check_command docker-compose || {
+                log_warn "Config requests 'docker-compose', which is not installed; using ${COMPOSE_CMD:-none detected}"
+                return 0
+            }
+            networking="dns"
+            ;;
+        *)
+            log_warn "Ignoring unrecognised advanced.podman_compose_command '$requested'"
+            return 0
+            ;;
+    esac
+
+    COMPOSE_CMD="$requested"
+    COMPOSE_NETWORKING="$networking"
+    log_info "Compose tool set from config: $COMPOSE_CMD (networking: $COMPOSE_NETWORKING)"
 }
 
 # Validate the config. Returns 0 if valid, 1 with errors on stderr.
@@ -144,6 +202,17 @@ config_validate() {
         fi
     fi
 
+    # podman_compose_command: COMPOSE_CMD is expanded unquoted at every call
+    # site, so only the four documented values are accepted.
+    val="${CONFIG[advanced.podman_compose_command]:-auto}"
+    case "$val" in
+        auto|"podman compose"|podman-compose|docker-compose) ;;
+        *)
+            log_error "Config: advanced.podman_compose_command must be one of auto, 'podman compose', podman-compose, docker-compose; got '$val'"
+            errors=$((errors + 1))
+            ;;
+    esac
+
     # Ports: integer in 1-65535. Regex-check BEFORE any arithmetic so a value
     # like 'x[$(cmd)]' can never reach (( )) evaluation.
     for key in coturn.min_port coturn.max_port smtp.port; do
@@ -169,6 +238,18 @@ config_validate() {
         val="${CONFIG[$key]:-}"
         if [[ -n "$val" && ! "$val" =~ ^[a-zA-Z_][a-zA-Z0-9_]{0,62}$ ]]; then
             log_error "Config: $key '$val' must match ^[a-zA-Z_][a-zA-Z0-9_]{0,62}\$"
+            errors=$((errors + 1))
+        fi
+    done
+
+    # backup.retention_daily / backup.retention_weekly: reach an arithmetic
+    # context in the root-run backup timer. Verified on bash 5.2.21: a bare
+    # $(cmd) operand is a syntax error, but an array subscript - a[$(cmd)] -
+    # does execute, so these are pinned to plain integers here.
+    for key in backup.retention_daily backup.retention_weekly; do
+        val="${CONFIG[$key]:-}"
+        if [[ -n "$val" && ! "$val" =~ ^[0-9]+$ ]]; then
+            log_error "Config: $key must be a non-negative integer, got '$val'"
             errors=$((errors + 1))
         fi
     done
@@ -221,9 +302,6 @@ config_validate() {
         errors=$((errors + 1))
     fi
 
-    # dns.cloudflare_api_token: Cloudflare tokens are URL-safe base64. The value
-    # reaches the compose and Caddyfile renderers raw, so restrict it to that
-    # alphabet. Never log the value itself.
     # hardening.*: each switch is consumed as `== "true"`, so any other spelling
     # ("yes", "1", "True") silently reads as "off" and quietly disables a
     # control the operator asked for. Reject it instead.
@@ -250,9 +328,14 @@ config_validate() {
         fi
     fi
 
-    val="${CONFIG[dns.cloudflare_api_token]:-}"
-    if [[ -n "$val" && ! "$val" =~ ^[A-Za-z0-9._-]+$ ]]; then
-        log_error "Config: dns.cloudflare_api_token must match ^[A-Za-z0-9._-]+\$"
+    # proxy.bind_address: the host side of the port the homeserver is published
+    # on when an external proxy fronts the stack, and the backend address in
+    # every generated snippet. A hostname is resolved by neither, and a value
+    # carrying a colon or a space would shift the remaining fields of the port
+    # mapping along, so only an IP literal is accepted.
+    val="${CONFIG[proxy.bind_address]:-}"
+    if [[ -n "$val" ]] && ! _validate_ip_literal "$val"; then
+        log_error "Config: proxy.bind_address '$val' is not an IP address literal"
         errors=$((errors + 1))
     fi
 
@@ -285,9 +368,14 @@ config_save_state() {
         echo "version=$MATRIX_SETUP_VERSION"
         echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         for key in $(echo "${!CONFIG[@]}" | tr ' ' '\n' | sort); do
-            # Don't persist passwords/secrets in state
+            # No credential-shaped value is persisted. The previous filter
+            # matched `*.password` and `*.secret*` only, which let through every
+            # `secrets.<name>_password`, every bridge token, the Cloudflare API
+            # token and the reCAPTCHA private key. This file exists for re-run
+            # detection: `upgrade_check` reads the version, the domain and the
+            # homeserver type, and nothing reads a secret back out of it.
             case "$key" in
-                *.password|*.secret*) continue ;;
+                secrets.*|*password*|*secret*|*token*|*key*) continue ;;
             esac
             echo "${key}=${CONFIG[$key]}"
         done
@@ -313,6 +401,7 @@ _config_apply_defaults() {
     : "${CONFIG[bridges.enabled]:=}"
     : "${CONFIG[admin_ui.enabled]:=true}"
     : "${CONFIG[admin_ui.subdomain]:=admin}"
+    : "${CONFIG[proxy.bind_address]:=$DEFAULT_PROXY_BIND_ADDRESS}"
     : "${CONFIG[monitoring.enabled]:=false}"
     : "${CONFIG[monitoring.grafana_subdomain]:=grafana}"
     : "${CONFIG[backup.retention_daily]:=$DEFAULT_BACKUP_DAILY}"
@@ -346,4 +435,24 @@ _validate_domain() {
     # Must have at least one dot (not just a hostname)
     [[ "$domain" == *.* ]] || return 1
     return 0
+}
+
+# An IP address literal, v4 or v6. A form with an embedded IPv4 part
+# (::ffff:127.0.0.1) is rejected rather than half-checked.
+_validate_ip_literal() {
+    local addr="$1"
+
+    if [[ "$addr" == *:* ]]; then
+        [[ "$addr" =~ ^[0-9A-Fa-f:]+$ && "$addr" != *::*::* ]]
+        return
+    fi
+
+    local -a octets
+    IFS='.' read -ra octets <<< "$addr"
+    (( ${#octets[@]} == 4 )) || return 1
+    local octet
+    for octet in "${octets[@]}"; do
+        [[ "$octet" =~ ^[0-9]{1,3}$ ]] || return 1
+        (( 10#$octet <= 255 )) || return 1
+    done
 }

@@ -13,6 +13,12 @@ backup_setup() {
 
     _backup_generate_backup_script "$scripts_dir" "$install_dir" "$domain"
     _backup_generate_restore_script "$scripts_dir" "$install_dir" "$domain"
+
+    # This phase runs after the install-directory ownership pass, and the timer
+    # that executes these scripts is a user unit: root-owned 0750 scripts would
+    # not be executable by it.
+    chown -R "${CONFIG[matrix_user]:-$DEFAULT_MATRIX_USER}:" "$scripts_dir"
+
     _backup_install_timer "$install_dir"
 
     log_success "Backup/restore scripts generated"
@@ -45,9 +51,16 @@ _backup_generate_backup_script() {
         printf 'ENCRYPTION_KEY=%q\n'   "${CONFIG[backup.encryption_key]:-}"
         printf 'UPLOAD_METHOD=%q\n'    "${CONFIG[backup.upload]:-none}"
         printf 'UPLOAD_TARGET=%q\n'    "${CONFIG[backup.upload_target]:-}"
+        printf 'DB_USER=%q\n'          "${CONFIG[database.user]:-synapse}"
+        printf 'DB_NAME=%q\n'          "${CONFIG[database.name]:-synapse}"
     } > "$scripts_dir/backup.sh"
 
     cat >> "$scripts_dir/backup.sh" << 'BKEOF'
+
+# The archive holds the signing key, the database and every config secret, and
+# is unencrypted unless the operator configured a key. Nothing else protects it
+# from other local accounts, so nothing it writes is group- or world-readable.
+umask 077
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_NAME="matrix-backup-${TIMESTAMP}"
@@ -57,15 +70,19 @@ log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 
 log "Starting Matrix backup: ${BACKUP_NAME}"
 mkdir -p "$WORK_DIR"
+chmod 700 "$BACKUP_DIR" "$WORK_DIR"
+
+# An uncompressed copy of the whole installation must not survive a failure.
+trap 'rm -rf "$WORK_DIR"' EXIT
 
 # --- 1. Database dump ---
 log "Dumping PostgreSQL database..."
 DB_DUMP_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 # Try container dump first, fall back to host
-if podman exec matrix-postgres pg_dump -U synapse --format=custom synapse > "${WORK_DIR}/database.dump" 2>/dev/null; then
+if podman exec matrix-postgres pg_dump -U "$DB_USER" --format=custom "$DB_NAME" > "${WORK_DIR}/database.dump" 2>/dev/null; then
     log "Database dump completed (container)"
-elif pg_dump -U synapse --format=custom synapse > "${WORK_DIR}/database.dump" 2>/dev/null; then
+elif pg_dump -U "$DB_USER" --format=custom "$DB_NAME" > "${WORK_DIR}/database.dump" 2>/dev/null; then
     log "Database dump completed (host)"
 else
     log "ERROR: Database dump failed!"
@@ -142,11 +159,42 @@ fi
 
 # --- 9. Retention ---
 log "Applying retention policy (${RETENTION_DAILY} daily, ${RETENTION_WEEKLY} weekly)..."
-# Keep N most recent daily backups
-find "$BACKUP_DIR" -name 'matrix-backup-*.tar.gz*' -type f | sort -r | tail -n +$((RETENTION_DAILY + RETENTION_WEEKLY + 1)) | while read -r old; do
-    log "Removing old backup: $(basename "$old")"
+# Two tiers, as the config advertises: the RETENTION_DAILY most recent archives,
+# then one archive for each of the RETENTION_WEEKLY most recent ISO weeks that
+# the daily tier does not already cover. Keeping DAILY+WEEKLY of the newest
+# files instead would give a recovery window of DAILY+WEEKLY *days*.
+# Filenames are matrix-backup-YYYYMMDD_HHMMSS[.tar.gz][.gpg|.age]; anything that
+# does not parse is left alone rather than guessed at.
+declare -A KEPT_WEEKS=()
+daily_kept=0
+weekly_kept=0
+
+while IFS= read -r old; do
+    name=$(basename "$old")
+    stamp=${name#matrix-backup-}
+    stamp=${stamp%%_*}
+
+    if [[ ! "$stamp" =~ ^[0-9]{8}$ ]]; then
+        log "Keeping unrecognised archive: $name"
+        continue
+    fi
+
+    if (( daily_kept < RETENTION_DAILY )); then
+        daily_kept=$((daily_kept + 1))
+        continue
+    fi
+
+    # GNU date: every supported distro ships coreutils.
+    week=$(date -u -d "$stamp" +%G-%V 2>/dev/null) || week=""
+    if [[ -n "$week" && -z "${KEPT_WEEKS[$week]:-}" && $weekly_kept -lt $RETENTION_WEEKLY ]]; then
+        KEPT_WEEKS["$week"]=1
+        weekly_kept=$((weekly_kept + 1))
+        continue
+    fi
+
+    log "Removing old backup: $name"
     rm -f "$old"
-done
+done < <(find "$BACKUP_DIR" -name 'matrix-backup-*.tar.gz*' -type f | sort -r)
 
 log "Backup completed: $(basename "$ARCHIVE") ($(du -h "$ARCHIVE" | cut -f1))"
 BKEOF
@@ -168,6 +216,9 @@ _backup_generate_restore_script() {
         printf 'set -euo pipefail\n\n'
         printf 'INSTALL_DIR=%q\n' "$install_dir"
         printf 'DOMAIN=%q\n'      "$domain"
+        printf 'COMPOSE_CMD=%q\n' "${COMPOSE_CMD:-podman compose}"
+        printf 'DB_USER=%q\n'     "${CONFIG[database.user]:-synapse}"
+        printf 'DB_NAME=%q\n'     "${CONFIG[database.name]:-synapse}"
         printf 'DRY_RUN=false\n'
     } > "$scripts_dir/restore.sh"
 
@@ -265,38 +316,48 @@ read -rp "Are you sure? Type 'yes' to continue: " confirm
 
 # Stop services
 log "Stopping Matrix stack..."
-podman compose -f "$INSTALL_DIR/podman-compose.yml" down 2>/dev/null || true
+$COMPOSE_CMD -f "$INSTALL_DIR/podman-compose.yml" down 2>/dev/null || true
 
 # Restore database
 if [[ -f "$BACKUP_DIR/database.dump" ]]; then
     log "Restoring database..."
-    podman compose -f "$INSTALL_DIR/podman-compose.yml" up -d postgres
+    $COMPOSE_CMD -f "$INSTALL_DIR/podman-compose.yml" up -d postgres
     sleep 5
-    podman exec -i matrix-postgres pg_restore -U synapse -d synapse --clean --if-exists < "$BACKUP_DIR/database.dump" 2>/dev/null || true
-    log "Database restored"
+    if podman exec -i matrix-postgres pg_restore -U "$DB_USER" -d "$DB_NAME" --clean --if-exists < "$BACKUP_DIR/database.dump"; then
+        log "Database restored"
+    else
+        log "ERROR: pg_restore failed — the database has NOT been restored."
+        log "The archive is intact; fix the error above and re-run this script."
+        exit 1
+    fi
 fi
 
+# Restoring onto a host with no installation yet is the disaster-recovery case
+# this script exists for, so the destinations are created rather than assumed.
 # Restore signing keys
 if [[ -d "$BACKUP_DIR/signing-keys" ]]; then
     log "Restoring signing keys..."
+    mkdir -p "$INSTALL_DIR/data/signing-keys"
     cp -a "$BACKUP_DIR/signing-keys/"* "$INSTALL_DIR/data/signing-keys/"
 fi
 
 # Restore media
 if [[ -d "$BACKUP_DIR/media" ]]; then
     log "Restoring media store..."
+    mkdir -p "$INSTALL_DIR/data/media"
     cp -a "$BACKUP_DIR/media/"* "$INSTALL_DIR/data/media/"
 fi
 
 # Restore config
 if [[ -d "$BACKUP_DIR/config" ]]; then
     log "Restoring configuration..."
+    mkdir -p "$INSTALL_DIR/config"
     cp -a "$BACKUP_DIR/config/"* "$INSTALL_DIR/config/"
 fi
 
 # Restart services
 log "Starting Matrix stack..."
-podman compose -f "$INSTALL_DIR/podman-compose.yml" up -d
+$COMPOSE_CMD -f "$INSTALL_DIR/podman-compose.yml" up -d
 
 log "Restore completed. Verify services are running."
 RSTEOF
@@ -340,7 +401,8 @@ WantedBy=timers.target
 UNIT
 
     chown -R "${matrix_user}:" "$timer_dir"
-    run_as_user systemctl --user enable matrix-backup.timer 2>/dev/null || true
+    systemd_user_enable_unit "$timer_dir" "matrix-backup.timer" "timers.target"
+    run_as_user systemctl --user daemon-reload 2>/dev/null || true
 
     rollback_snapshot "backup" "TIMER_INSTALLED" "$timer_dir/matrix-backup.timer"
     log_substep "Backup timer installed (daily at 03:00)"

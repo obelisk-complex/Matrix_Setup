@@ -292,6 +292,23 @@ retry_with_backoff() {
     return 1
 }
 
+# --- Host address a port is published on, in the form both consumers accept ---
+# The compose file writes it as the host side of a port mapping and the proxy
+# snippets write it into a backend URL. podman-run(1) gives that mapping as
+# [[ip:][hostPort]:]containerPort, so an IPv6 literal is bracketed to keep its
+# own colons out of the field separators — the same form a URL needs (RFC 3986
+# §3.2.2). UNVERIFIED: no podman was run here to parse the bracketed mapping;
+# the podman 4.9.3 binary does carry the string "IPv6 addresses must be
+# surrounded by square brackets".
+proxy_bind_host() {
+    local addr="${1:-$DEFAULT_PROXY_BIND_ADDRESS}"
+    if [[ "$addr" == *:* ]]; then
+        printf '[%s]' "$addr"
+    else
+        printf '%s' "$addr"
+    fi
+}
+
 # --- Require root/sudo ---
 require_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -300,10 +317,38 @@ require_root() {
     fi
 }
 
+# --- The compose command, split into argv ---
+# COMPOSE_CMD is a string that is one word ("podman-compose", or the absolute
+# path to the pinned virtualenv binary) or two ("podman compose", podman v5+).
+# In command position the shell splits it for free; passed as an *argument* to
+# run_as_user it has to be split explicitly. Quoting it whole would look for a
+# binary literally named "podman compose"; leaving it bare works but makes the
+# split invisible (SC2086), which is how it was reviewed as a bug twice.
+# Usage: local -a compose=(); compose_argv compose
+compose_argv() {
+    local -n _compose_argv="$1"
+    read -r -a _compose_argv <<< "$COMPOSE_CMD"
+}
+
 # --- Run command as matrix user ---
 run_as_user() {
     local matrix_user="${CONFIG[matrix_user]:-$DEFAULT_MATRIX_USER}"
     sudo -u "$matrix_user" -- "$@"
+}
+
+# --- Enable a systemd *user* unit from the installer ---
+# `systemctl --user enable` needs the target user's session bus, which `sudo -u`
+# does not set up, so every call site used to swallow its failure and the units
+# were never enabled. systemctl(1) defines enable as creating "a set of symlinks,
+# as encoded in the [Install] sections", so the symlink is created directly.
+# Quadlet units need none of this: their generator applies [Install] itself
+# (podman-systemd.unit(5)).
+systemd_user_enable_unit() {
+    local unit_dir="$1" unit="$2" target="$3"
+    local wants_dir="$unit_dir/${target}.wants"
+
+    mkdir -p "$wants_dir"
+    ln -sf "$unit_dir/$unit" "$wants_dir/$unit"
 }
 
 # --- Resolve a user's home directory (no eval) ---

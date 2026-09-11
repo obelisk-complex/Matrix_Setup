@@ -2,10 +2,10 @@
 # Enable modules: a2enmod proxy proxy_http proxy_wstunnel headers rewrite
 # Include this inside the <VirtualHost> that already serves {{DOMAIN}}.
 #
-# Backend reachability: these routes assume 127.0.0.1:{{HS_PORT}} reaches the
-# homeserver. The generated compose file publishes no homeserver port (both
-# fragments declare `ports: []`), so publish the container port or attach this
-# proxy to the matrix-net network first.
+# Backend reachability: the generated compose file publishes the homeserver's
+# client port on {{HS_HOST}}:{{HS_PORT}} whenever setup defers to an existing
+# proxy, so these routes reach it as written. If Apache runs anywhere but this
+# host, set proxy.bind_address to an address it can reach and re-run setup.
 
 Header always set Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
 Header always set X-Content-Type-Options "nosniff"
@@ -21,26 +21,26 @@ ProxyRequests Off
 # well_known_server_name - so the endpoints are proxied rather than synthesised
 # here, which keeps one source of truth for the delegation.
 <Location "/.well-known/matrix">
-    ProxyPass http://127.0.0.1:{{HS_PORT}}/.well-known/matrix
-    ProxyPassReverse http://127.0.0.1:{{HS_PORT}}/.well-known/matrix
+    ProxyPass http://{{HS_HOST}}:{{HS_PORT}}/.well-known/matrix
+    ProxyPassReverse http://{{HS_HOST}}:{{HS_PORT}}/.well-known/matrix
     Header always set Content-Type "application/json"
     Header always set Access-Control-Allow-Origin "*"
 </Location>
 
 # Proxy Matrix APIs
 <Location "/_matrix">
-    ProxyPass http://127.0.0.1:{{HS_PORT}}/_matrix
-    ProxyPassReverse http://127.0.0.1:{{HS_PORT}}/_matrix
+    ProxyPass http://{{HS_HOST}}:{{HS_PORT}}/_matrix
+    ProxyPassReverse http://{{HS_HOST}}:{{HS_PORT}}/_matrix
     RequestHeader set X-Forwarded-Proto "https"
 </Location>
 
 <Location "/_synapse">
-    ProxyPass http://127.0.0.1:{{HS_PORT}}/_synapse
-    ProxyPassReverse http://127.0.0.1:{{HS_PORT}}/_synapse
+    ProxyPass http://{{HS_HOST}}:{{HS_PORT}}/_synapse
+    ProxyPassReverse http://{{HS_HOST}}:{{HS_PORT}}/_synapse
     RequestHeader set X-Forwarded-Proto "https"
 </Location>
 
 # WebSocket support for /sync
 RewriteEngine On
 RewriteCond %{HTTP:Upgrade} =websocket [NC]
-RewriteRule /_matrix/(.*) ws://127.0.0.1:{{HS_PORT}}/_matrix/$1 [P,L]
+RewriteRule /_matrix/(.*) ws://{{HS_HOST}}:{{HS_PORT}}/_matrix/$1 [P,L]

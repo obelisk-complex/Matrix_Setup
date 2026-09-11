@@ -15,3 +15,9 @@
       interval: 30s
       timeout: 5s
       retries: 3
+{{#PROXY_EXTERNAL}}
+    # Reachable for an external proxy only through a published port; the image
+    # itself listens on 80. Bound to proxy.bind_address, loopback by default.
+    ports:
+      - "{{PROXY_BIND}}:{{WEBCLIENT_PORT}}:80"
+{{/PROXY_EXTERNAL}}

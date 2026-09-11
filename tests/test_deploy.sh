@@ -208,6 +208,52 @@ assert_argv_has "http://localhost:8008/_matrix/federation/v1/version" \
     "health checks probe the federation API in the container"
 assert_match "Client API: OK" "$health_out" "client API check reports success"
 
+# --- The compose command reaches podman intact, whatever shape it has ---
+# COMPOSE_CMD is a string: "podman compose" (two words) from podman v5+,
+# "podman-compose" or an absolute virtualenv path otherwise. As an argument to
+# run_as_user it has to be split explicitly - quoted whole, the shell looks for
+# a binary literally named "podman compose".
+configure_deploy synapse
+COMPOSE_CMD="podman compose"
+reset_stub 0
+_deploy_start_services "$TEST_TMP/install" "$TEST_TMP/install/podman-compose.yml" >/dev/null 2>&1 || true
+assert_argv_has "compose" "two-word compose command: podman receives the subcommand"
+assert_argv_has "up" "two-word compose command: podman receives 'up'"
+assert_file_contains "$STUB_ARGV_JOINED" "compose -f .* up -d" \
+    "two-word compose command: the whole invocation survives the split"
+
+# A single-binary compose tool must not be split into pieces.
+COMPOSE_CMD="podman-compose"
+reset_stub 0
+: > "$STUB_ARGV_JOINED"
+_deploy_start_services "$TEST_TMP/install" "$TEST_TMP/install/podman-compose.yml" >/dev/null 2>&1 || true
+assert_false "single-binary compose command: no stray 'compose' argument is passed" \
+    grep -q '^compose$' "$STUB_ARGV"
+COMPOSE_CMD="podman compose"
+
+# --- A failed client API check must fail the phase ---
+# The health checks used to be advisory: whatever they found, the phase logged
+# "deployed successfully" and the installer carried on to write a report saying
+# the stack was up.
+configure_deploy synapse
+reset_stub 1
+health_rc=0
+health_out=$(_deploy_health_checks "example.com" 2>&1) || health_rc=$?
+assert_ne "0" "$health_rc" "health checks fail when the client API does not answer"
+assert_match "Client API: FAILED" "$health_out" "the failing check is named"
+
+# Federation is reachable from outside as often as not, so it warns and the
+# phase still succeeds — but it is still counted and reported.
+configure_deploy synapse
+CONFIG["federation.enabled"]="true"
+# First probe (client API) succeeds, second (federation) fails.
+reset_stub 0 1
+health_rc=0
+health_out=$(_deploy_health_checks "example.com" 2>&1) || health_rc=$?
+assert_eq "0" "$health_rc" "a failing federation probe does not fail the phase"
+assert_match "Federation API: FAILED" "$health_out" "the federation failure is reported"
+assert_match "1/2 passed" "$health_out" "the summary counts what passed"
+
 # --- Synapse admin registration reaches the homeserver the same way ---
 # This is the step immediately after the readiness probe, and it has the same
 # root cause: there is no host port to POST to.

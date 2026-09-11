@@ -18,38 +18,107 @@ harden_all() {
     log_success "Server hardening complete"
 }
 
-# Return 0 if any SSH public key is installed for root or any /home user.
+# Return 0 if the account that will need to SSH back in has a public key.
+#
+# That account is $SUDO_USER when the operator used sudo, root when they did
+# not. Accepting a key from any account on the box — the previous behaviour —
+# was satisfied by an unrelated user's key, which is exactly the operator this
+# guard exists for: one sudo-ing from a keyless account on a machine where
+# somebody else happens to have a key.
+#
+# Whether that key is enough to proceed is a separate question, answered by
+# _ssh_lockdown_is_safe: a key is worthless if the drop-in is the thing that
+# closes the account's way in.
 _ssh_has_authorized_key() {
-    local f
-    shopt -s nullglob
-    local files=(/root/.ssh/authorized_keys /root/.ssh/authorized_keys2 \
-                 /home/*/.ssh/authorized_keys /home/*/.ssh/authorized_keys2)
-    for f in "${files[@]}"; do
+    local user home f
+    user="${SUDO_USER:-root}"
+    home=$(get_user_home "$user" 2>/dev/null) || return 1
+    [[ -n "$home" ]] || return 1
+
+    # Both names, because sshd's default AuthorizedKeysFile lists both.
+    for f in "$home/.ssh/authorized_keys" "$home/.ssh/authorized_keys2"; do
         [[ -s "$f" ]] || continue
         # A non-blank, non-comment line indicates a configured key.
         if grep -qE '^[[:space:]]*[^#[:space:]]' "$f" 2>/dev/null; then
-            shopt -u nullglob
             return 0
         fi
     done
-    shopt -u nullglob
     return 1
+}
+
+# Print the PermitRootLogin value the drop-in will actually carry.
+#
+# Rendered rather than read off the template, so a value that later becomes
+# conditional on config is picked up without this having to learn the
+# condition. Empty output means the drop-in says nothing about root login, in
+# which case the operator's own sshd_config decides and we are not the ones
+# closing the door.
+_ssh_drop_in_permit_root() {
+    local tmp value
+    tmp=$(make_temp_file) || return 1
+    if ! _harden_ssh_write "$tmp" >/dev/null 2>&1; then
+        rm -f "$tmp"
+        return 1
+    fi
+    value=$(awk '$1 == "PermitRootLogin" { v = $2 } END { print v }' "$tmp")
+    rm -f "$tmp"
+    printf '%s\n' "$value"
+}
+
+# Return 0 only if the operator still has a way back in after the drop-in
+# lands. Emits the reason when it refuses.
+#
+# Two ways to lose access, and a key only covers one of them:
+#
+#   - The account has no key at all, so PasswordAuthentication no removes its
+#     only credential.
+#   - The account is root and the drop-in sets PermitRootLogin no, which closes
+#     root's login whether or not root holds a key. A root key is not evidence
+#     of continued access when the change being guarded is the one that
+#     invalidates it.
+#
+# Being wrong in this direction costs an unhardened sshd and a warning; being
+# wrong the other way costs the operator their server.
+_ssh_lockdown_is_safe() {
+    local user="${SUDO_USER:-root}"
+
+    if [[ "$user" == "root" ]]; then
+        local permit_root
+        # A render that fails leaves us unable to say root's login survives.
+        permit_root=$(_ssh_drop_in_permit_root) || permit_root="no"
+        case "$permit_root" in
+            no|forced-commands-only)
+                log_warn "Installing as root, and this drop-in sets 'PermitRootLogin $permit_root'."
+                log_warn "  That closes root's own SSH login whether or not root has a key."
+                log_warn "Skipping SSH password/root-login lockdown to avoid locking you out."
+                log_warn "  Create a non-root account with an SSH key and sudo, then re-run from it,"
+                log_warn "  or set 'PermitRootLogin prohibit-password' yourself and re-run."
+                return 1
+                ;;
+        esac
+    fi
+
+    if ! _ssh_has_authorized_key; then
+        log_warn "No SSH authorized_keys found for '$user', the account you are installing from."
+        log_warn "Skipping SSH password/root-login lockdown to avoid locking you out."
+        log_warn "Install a key for '$user', then set 'PasswordAuthentication no' manually or re-run."
+        return 1
+    fi
+
+    return 0
 }
 
 harden_ssh() {
     log_substep "Hardening SSH"
-    local ssh_dir="/etc/ssh/sshd_config.d"
+    # Overridable so the drop-in can be rendered into a scratch directory in
+    # tests without writing into /etc/ssh; the installer never sets it.
+    local ssh_dir="${SSHD_CONFIG_DIR:-/etc/ssh/sshd_config.d}"
     local ssh_conf="$ssh_dir/99-matrix-hardening.conf"
 
-    # Refuse to disable password auth / root login unless an SSH public key is
-    # actually installed. On a fresh password-only box this lockdown would
+    # Refuse to disable password auth / root login unless the operator is left
+    # with a way back in. On a fresh password-only box this lockdown would
     # otherwise lock the only operator out with no recovery path.
-    if ! _ssh_has_authorized_key; then
-        log_warn "No SSH authorized_keys found for root or any /home user."
-        log_warn "Skipping SSH password/root-login lockdown to avoid locking you out."
-        log_warn "Install an SSH key, then set 'PasswordAuthentication no' manually or re-run."
-        return 0
-    fi
+    _ssh_lockdown_is_safe || return 0
 
     mkdir -p "$ssh_dir"
     rollback_snapshot_file "$CURRENT_PHASE" "$ssh_conf"

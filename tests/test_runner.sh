@@ -29,7 +29,10 @@ run_test_file() {
     printf '%s--- %s ---%s\n' "$BOLD" "$test_name" "$RESET"
 
     local output exit_code=0
-    output=$(bash "$test_file" 2>&1) || exit_code=$?
+    # stdin from /dev/null: a test file that reads stdin otherwise wedges the
+    # whole suite waiting on a terminal, which reads as a hang rather than a
+    # failure. A test that wants input should provide its own.
+    output=$(bash "$test_file" 2>&1 </dev/null) || exit_code=$?
 
     while IFS= read -r line; do
         case "$line" in

@@ -27,8 +27,16 @@ deploy_run() {
         _deploy_start_coturn "$install_dir"
     fi
 
-    # Run post-deploy checks
-    _deploy_health_checks "$domain"
+    # Run post-deploy checks. A failed client API check fails the phase: the
+    # report that follows would otherwise tell the operator the stack is up.
+    if ! _deploy_health_checks "$domain"; then
+        return 1
+    fi
+
+    if [[ "${CONFIG[deploy.health_passed]:-0}" != "${CONFIG[deploy.health_total]:-0}" ]]; then
+        log_warn "Matrix stack deployed, but ${CONFIG[deploy.health_passed]}/${CONFIG[deploy.health_total]} checks passed — see the warnings above"
+        return 0
+    fi
 
     log_success "Matrix stack deployed successfully"
 }
@@ -46,10 +54,9 @@ _deploy_start_services() {
     local compose_file="$2"
     log_substep "Starting services..."
 
-    # Use Quadlet if available, otherwise compose up directly
-    local matrix_user="${CONFIG[matrix_user]:-$DEFAULT_MATRIX_USER}"
-
-    run_as_user $COMPOSE_CMD -f "$compose_file" up -d 2>&1 | while IFS= read -r line; do
+    local -a compose=()
+    compose_argv compose
+    run_as_user "${compose[@]}" -f "$compose_file" up -d 2>&1 | while IFS= read -r line; do
         log_verbose "$line"
     done
 }
@@ -271,24 +278,43 @@ _deploy_start_coturn() {
 
     # Try Quadlet first
     if systemctl start matrix-coturn 2>/dev/null; then
+        CONFIG[deploy.coturn_result]="started"
         log_substep "Coturn started via Quadlet"
         return 0
     fi
 
-    # Fallback: direct podman run
+    # Fallback: the standalone compose file, then a direct podman run. Coturn
+    # is rootful and separate from the stack, so a failure here degrades voice
+    # and video rather than the install - but it is reported, not swallowed.
+    local rc=0
     local coturn_compose="$install_dir/coturn-compose.yml"
     if [[ -f "$coturn_compose" ]]; then
         podman compose -f "$coturn_compose" up -d 2>/dev/null || \
-        podman-compose -f "$coturn_compose" up -d 2>/dev/null || true
+        podman-compose -f "$coturn_compose" up -d 2>/dev/null || rc=1
     else
+        # Same certificate mount the compose fragment and the Quadlet unit
+        # carry: turnserver.conf references /etc/coturn/certs when TLS is on.
+        local cert_mount=()
+        if [[ "${CONFIG[coturn.tls]:-false}" == "true" && -n "${CONFIG[coturn.cert_dir]:-}" ]]; then
+            cert_mount=(-v "${CONFIG[coturn.cert_dir]}:/etc/coturn/certs:ro")
+        fi
         podman run -d --name matrix-coturn \
             --network=host \
             --restart=unless-stopped \
             -v "$install_dir/config/turnserver.conf:/etc/coturn/turnserver.conf:ro" \
+            ${cert_mount[@]+"${cert_mount[@]}"} \
             "$COTURN_IMAGE" \
-            -c /etc/coturn/turnserver.conf 2>/dev/null || true
+            -c /etc/coturn/turnserver.conf 2>/dev/null || rc=1
     fi
 
+    if (( rc != 0 )); then
+        CONFIG[deploy.coturn_result]="failed"
+        log_warn "Coturn did not start. TURN relay is unavailable, so voice and video calls"
+        log_warn "  between clients behind NAT will fail. Check: podman logs matrix-coturn"
+        return 0
+    fi
+
+    CONFIG[deploy.coturn_result]="started"
     log_substep "Coturn started"
 }
 
@@ -298,12 +324,16 @@ _deploy_health_checks() {
 
     local checks_passed=0
     local checks_total=0
+    local client_api_ok="false"
 
-    # 1. Homeserver client API
+    # 1. Homeserver client API. This one is decisive: it is served inside the
+    # container and needs nothing external, so a failure means the homeserver
+    # is not serving, not that the environment is awkward.
     checks_total=$((checks_total + 1))
     if _deploy_hs_curl "http://localhost:${PORT_SYNAPSE}/_matrix/client/versions" &>/dev/null; then
         log_substep "  Client API: OK"
         checks_passed=$((checks_passed + 1))
+        client_api_ok="true"
     else
         log_warn "  Client API: FAILED"
     fi
@@ -339,4 +369,12 @@ _deploy_health_checks() {
     fi
 
     log_substep "Health checks: $checks_passed/$checks_total passed"
+    CONFIG[deploy.health_passed]="$checks_passed"
+    CONFIG[deploy.health_total]="$checks_total"
+
+    if [[ "$client_api_ok" != "true" ]]; then
+        log_error "The homeserver is not serving its client API; the stack is not usable."
+        return 1
+    fi
+    return 0
 }

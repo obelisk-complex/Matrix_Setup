@@ -264,6 +264,18 @@ if query == "undeclared_secrets":
                 dangling.add(name)
     print(" ".join(sorted(dangling)))
     sys.exit(0)
+if query == "published":
+    # Every host address the file publishes, as "IP:PORT" (or "PORT" where no
+    # IP is given), with the container port dropped: what a proxy on this host
+    # would have to connect to.
+    found = set()
+    for service in (doc.get("services") or {}).values():
+        for entry in service.get("ports") or []:
+            if not isinstance(entry, str):
+                continue
+            found.add(entry.rsplit(":", 1)[0])
+    print(" ".join(sorted(found)))
+    sys.exit(0)
 if query == "bare_vars":
     # ${NAME} with nothing between the name and the brace has no default, so
     # compose can only resolve it from a .env file or the caller's environment.
@@ -379,6 +391,22 @@ assert_eq "caddy homeserver postgres webclient" \
 reset_compose_config
 run_assemble
 assert_false "no coturn compose file when coturn is disabled" test -f "$COTURN_FILE"
+
+# --- A Cloudflare token must not reach the Caddy container ---
+# DNS-01 was dropped: the pinned stock Caddy image carries no DNS provider
+# module, so nothing inside that container can use CF_API_TOKEN. Handing it one
+# puts a zone-editing credential in a container with no use for it. Asserted on
+# the whole environment mapping rather than on the absence of one key, so an
+# environment block that disappears entirely still reads as a failure.
+reset_compose_config
+CONFIG[dns.cloudflare_api_token]="cf-token-value"
+run_assemble
+assert_eq "0" "$assemble_rc" "compose_assemble succeeds with a Cloudflare token configured"
+assert_eq "DOMAIN" \
+    "$(compose_yaml_query "$COMPOSE_FILE" list services.caddy.environment)" \
+    "the caddy container is handed no CF_API_TOKEN"
+assert_false "the Cloudflare token appears nowhere in the assembled compose file" \
+    grep -q 'cf-token-value' "$COMPOSE_FILE"
 
 # --- Secret delivery, default mode: compose interpolates from .env ---
 reset_compose_config
@@ -498,6 +526,177 @@ for inv_hs in synapse dendrite; do
     done
 done
 
+# =====================================================================
+# External-proxy mode has to give the admin's proxy something to connect to
+#
+# With proxy.external=true the Caddy fragment is left out, so nothing on
+# matrix-net is published, and the homeserver's `ports: []` meant the generated
+# snippets pointed the operator's nginx/apache/traefik at a port no process was
+# listening on. The homeserver's client port is published instead, bound to
+# proxy.bind_address — loopback by default, so it is reachable from the host and
+# from nowhere else. These assertions parse the assembled file and compare it
+# with the rendered snippet, so the two cannot drift apart.
+# =====================================================================
+
+source "$LIB_DIR/09_proxy_detect.sh"
+
+SNIPPET_DIR="$ASSEMBLE_DIR/proxy-snippets"
+
+# The backend address the generated snippet hands the operator, read back out
+# of the rendered file rather than restated here.
+generic_snippet_backend() {
+    rm -rf "$SNIPPET_DIR"
+    DETECTED_PROXY="generic"
+    _generate_proxy_snippet >/dev/null 2>&1 || true
+    sed -n 's|^Homeserver backend: http://\(.*\)$|\1|p' \
+        "$SNIPPET_DIR/matrix-proxy-requirements.txt" 2>/dev/null | paste -sd' ' -
+}
+
+# Every backend URL the traefik snippet routes to, as a sorted "host:port" set.
+traefik_snippet_backends() {
+    rm -rf "$SNIPPET_DIR"
+    DETECTED_PROXY="traefik"
+    _generate_proxy_snippet >/dev/null 2>&1 || true
+    sed -n 's|^ *- url: "http://\(.*\)"$|\1|p' \
+        "$SNIPPET_DIR/matrix-traefik.yml" 2>/dev/null | sort -u | paste -sd' ' -
+}
+
+# --- Default path: Caddy fronts the homeserver, so nothing is published ---
+reset_compose_config
+run_assemble
+assert_eq "" "$(compose_yaml_query "$COMPOSE_FILE" list services.homeserver.ports)" \
+    "default install publishes no homeserver port"
+assert_eq "443 80 8448" "$(compose_yaml_query "$COMPOSE_FILE" published)" \
+    "default install publishes only Caddy's own ports"
+
+reset_compose_config
+CONFIG["proxy.external"]="false"
+run_assemble
+assert_eq "" "$(compose_yaml_query "$COMPOSE_FILE" list services.homeserver.ports)" \
+    "proxy.external=false publishes no homeserver port"
+
+# --- External proxy: the client port is published on loopback ---
+reset_compose_config
+CONFIG["proxy.external"]="true"
+run_assemble
+assert_eq "0" "$assemble_rc" "compose_assemble succeeds with an external proxy"
+assert_eq "homeserver postgres webclient" \
+    "$(compose_yaml_query "$COMPOSE_FILE" services)" \
+    "external-proxy mode still leaves Caddy out of the stack"
+assert_eq "127.0.0.1:8008:8008" \
+    "$(compose_yaml_query "$COMPOSE_FILE" list services.homeserver.ports)" \
+    "external-proxy mode publishes the client port on loopback by default"
+assert_eq "127.0.0.1:8080:80" \
+    "$(compose_yaml_query "$COMPOSE_FILE" list services.webclient.ports)" \
+    "external-proxy mode publishes the web client on loopback by default"
+assert_true "external-proxy output loads under a duplicate-rejecting loader" \
+    compose_yaml_strict "$COMPOSE_FILE"
+
+# The snippets delegate federation to port 443 (.well-known/matrix/server
+# answers "{{DOMAIN}}:443") and route /_matrix — federation included — to the
+# client port, which Synapse's 8008 listener serves with resources
+# [client, federation]. Nothing asks for 8448, so publishing it would open a
+# port no generated config refers to.
+assert_no_match ':8448' "$(compose_yaml_query "$COMPOSE_FILE" published)" \
+    "external-proxy mode does not publish the federation port"
+
+# --- The snippet's target and the published address are the same address ---
+reset_compose_config
+CONFIG["proxy.external"]="true"
+run_assemble
+# The query exits non-zero when the key is absent, which is exactly the state
+# under test: swallow it so the assertion below reports it rather than errexit
+# killing the rest of the file.
+published_hs=$(compose_yaml_query "$COMPOSE_FILE" list services.homeserver.ports) || true
+assert_eq "${published_hs%:*}" "$(generic_snippet_backend)" \
+    "the snippet's backend is the address the compose file publishes"
+assert_eq "$(compose_yaml_query "$COMPOSE_FILE" published)" \
+    "$(traefik_snippet_backends)" \
+    "every traefik snippet backend is an address the compose file publishes"
+
+reset_compose_config
+CONFIG["proxy.external"]="true"
+CONFIG["homeserver.type"]="dendrite"
+run_assemble
+# The query exits non-zero when the key is absent, which is exactly the state
+# under test: swallow it so the assertion below reports it rather than errexit
+# killing the rest of the file.
+published_hs=$(compose_yaml_query "$COMPOSE_FILE" list services.homeserver.ports) || true
+assert_eq "${published_hs%:*}" "$(generic_snippet_backend)" \
+    "dendrite: the snippet's backend is the address the compose file publishes"
+
+# --- The bind address is the operator's to change ---
+reset_compose_config
+CONFIG["proxy.external"]="true"
+CONFIG["proxy.bind_address"]="10.1.2.3"
+run_assemble
+assert_eq "10.1.2.3:8008:8008" \
+    "$(compose_yaml_query "$COMPOSE_FILE" list services.homeserver.ports)" \
+    "a configured bind address is what the homeserver port is published on"
+# The query exits non-zero when the key is absent, which is exactly the state
+# under test: swallow it so the assertion below reports it rather than errexit
+# killing the rest of the file.
+published_hs=$(compose_yaml_query "$COMPOSE_FILE" list services.homeserver.ports) || true
+assert_eq "${published_hs%:*}" "$(generic_snippet_backend)" \
+    "a configured bind address reaches the snippet too"
+
+# podman-run(1) gives the mapping as [[ip:][hostPort]:]containerPort, so an
+# IPv6 literal has to be bracketed for its own colons not to read as field
+# separators.
+reset_compose_config
+CONFIG["proxy.external"]="true"
+CONFIG["proxy.bind_address"]="::1"
+run_assemble
+assert_eq "[::1]:8008:8008" \
+    "$(compose_yaml_query "$COMPOSE_FILE" list services.homeserver.ports)" \
+    "an IPv6 bind address is bracketed in the published port"
+# The query exits non-zero when the key is absent, which is exactly the state
+# under test: swallow it so the assertion below reports it rather than errexit
+# killing the rest of the file.
+published_hs=$(compose_yaml_query "$COMPOSE_FILE" list services.homeserver.ports) || true
+assert_eq "${published_hs%:*}" "$(generic_snippet_backend)" \
+    "an IPv6 bind address is bracketed in the snippet backend too"
+
+# --- Mode invariance: external-proxy mode has one job, in every stack shape ---
+# The mode claims the operator's own proxy fronts the stack, so the backend it
+# needs must exist whatever else is turned on. Checking only the default shape
+# would leave a combination that quietly publishes nothing.
+for ext_hs in synapse dendrite; do
+    for ext_wc in element none; do
+        for ext_extra in none monitoring admin; do
+            reset_compose_config
+            CONFIG["proxy.external"]="true"
+            CONFIG["homeserver.type"]="$ext_hs"
+            CONFIG["webclient.type"]="$ext_wc"
+            case "$ext_extra" in
+                monitoring) CONFIG["monitoring.enabled"]="true" ;;
+                admin)      CONFIG["admin_ui.enabled"]="true" ;;
+            esac
+            run_assemble
+
+            ext_label="hs=$ext_hs, $ext_extra, webclient=$ext_wc"
+            assert_eq "0" "$assemble_rc" "external-proxy mode assembles ($ext_label)"
+            assert_eq "127.0.0.1:8008:8008" \
+                "$(compose_yaml_query "$COMPOSE_FILE" list services.homeserver.ports)" \
+                "external-proxy mode publishes the client port on loopback ($ext_label)"
+            assert_no_match ':8448' "$(compose_yaml_query "$COMPOSE_FILE" published)" \
+                "external-proxy mode publishes no federation port ($ext_label)"
+
+            reset_compose_config
+            CONFIG["homeserver.type"]="$ext_hs"
+            CONFIG["webclient.type"]="$ext_wc"
+            case "$ext_extra" in
+                monitoring) CONFIG["monitoring.enabled"]="true" ;;
+                admin)      CONFIG["admin_ui.enabled"]="true" ;;
+            esac
+            run_assemble
+            assert_eq "" \
+                "$(compose_yaml_query "$COMPOSE_FILE" list services.homeserver.ports)" \
+                "the default path publishes no homeserver port ($ext_label)"
+        done
+    done
+done
+
 # --- A compose file the compose binary rejects must fail the run, loudly ---
 reset_compose_config
 COMPOSE_CMD="stub_compose_fail"
@@ -591,6 +790,43 @@ assert_eq "    value: x" "$(_compose_render_fragment "$TEST_TMP/pin-trailing.yml
     "trailing newlines in a fragment are stripped"
 assert_eq "    value: x" "$(_compose_render_fragment "$TEST_TMP/pin-notrailing.yml" frag_pin_vars)" \
     "a fragment with no trailing newline renders unchanged"
+
+# =====================================================================
+# proxy.bind_address ends up in a published-port field
+#
+# The value is the host side of a port mapping and the backend address in every
+# generated snippet. A hostname there would be resolved by neither, and anything
+# carrying a colon or a space would either shift the other fields of the mapping
+# along or be rejected by the compose engine at start time. Only an IP literal
+# is accepted.
+# =====================================================================
+source "$LIB_DIR/04_config.sh"
+HEADLESS="false"
+
+check_bind_address() {
+    local addr="$1"
+    CONFIG=()
+    CONFIG["domain.name"]="example.com"
+    [[ -n "$addr" ]] && CONFIG["proxy.bind_address"]="$addr"
+    _config_apply_defaults
+    config_validate 2>/dev/null
+}
+
+CONFIG=()
+CONFIG["domain.name"]="example.com"
+_config_apply_defaults
+assert_eq "127.0.0.1" "${CONFIG[proxy.bind_address]:-<unset>}" \
+    "proxy.bind_address defaults to loopback"
+
+for good_addr in 127.0.0.1 10.1.2.3 0.0.0.0 ::1 fd00::1; do
+    assert_true "proxy.bind_address accepts the IP literal '$good_addr'" \
+        check_bind_address "$good_addr"
+done
+
+for bad_addr in localhost example.com 127.0.0.1:8008 "127.0.0.1 8008" 999.1.1.1 '$(id)' 1.2.3; do
+    assert_false "proxy.bind_address rejects '$bad_addr'" \
+        check_bind_address "$bad_addr"
+done
 
 teardown_test_tmp
 test_report

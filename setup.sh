@@ -36,6 +36,24 @@ for lib in "$SCRIPT_DIR"/lib/[0-9][0-9]_*.sh; do
     source "$lib"
 done
 
+usage() {
+    cat << 'USAGE'
+Matrix Stack Setup — deploys a Matrix homeserver stack with Podman.
+
+Usage: sudo bash setup.sh [OPTIONS]
+
+Options:
+  --headless          Non-interactive mode (requires --config)
+  --config FILE       Path to TOML configuration file
+  --quiet             Suppress verbose output
+  --podman-secrets    Use Podman native secrets instead of .env
+  --generate-config   Print an example TOML config and exit
+  --upgrade           Skip the wizard, go straight to the upgrade menu
+  --rollback          Roll back the last setup run
+  -h, --help          Show this help message
+USAGE
+}
+
 # --- Argument parsing ---
 HEADLESS="false"
 QUIET="false"
@@ -53,7 +71,7 @@ while [[ $# -gt 0 ]]; do
         --generate-config) config_generate_example; exit 0 ;;
         --upgrade)         DO_UPGRADE="true"; shift ;;
         --rollback)        DO_ROLLBACK="true"; shift ;;
-        -h|--help)         head -17 "$0" | tail -14; exit 0 ;;
+        -h|--help)         usage; exit 0 ;;
         *)                 log_error "Unknown option: $1"; exit "$E_CONFIG" ;;
     esac
 done
@@ -104,13 +122,31 @@ main() {
             log_error "No existing installation found for upgrade."
             exit "$E_CONFIG"
         fi
-        upgrade_prompt
-        exit "$E_OK"
+        # An upgrade reads the same config file an install does, so it is held
+        # to the same validation.
+        if ! config_validate; then
+            log_error "Configuration validation failed"
+            exit "$E_CONFIG"
+        fi
+
+        # "Reconfigure settings" falls through into the ordinary flow (system
+        # detection, wizard, phases); every other choice is terminal.
+        upgrade_rc=0
+        upgrade_prompt || upgrade_rc=$?
+        case "$upgrade_rc" in
+            0)                          exit "$E_OK" ;;
+            "$E_UPGRADE_RECONFIGURE")   : ;;
+            *)                          exit "$upgrade_rc" ;;
+        esac
     fi
 
     # System detection must run before the wizard so the system-check step
     # has real values (RAM, disk, OS) instead of the defaults from 02_detect.sh.
     run_phase "System detection"        detect_all
+
+    # An explicit advanced.podman_compose_command overrides what detection
+    # picked; it has to run after detect_all, which sets COMPOSE_CMD itself.
+    config_apply_compose_command
 
     # Interactive wizard or headless
     if [[ "$HEADLESS" == "true" ]]; then
@@ -158,6 +194,7 @@ main() {
     # === Phase 7: Assembly & Deployment ===
     run_phase "Compose assembly"        compose_assemble
     run_phase "Quadlet systemd setup"   quadlet_setup
+    run_phase "Install dir ownership"   install_dir_set_ownership
     run_phase "Deploy"                  deploy_run
 
     # === Phase 8: Post-Deployment ===

@@ -32,4 +32,12 @@
       timeout: 5s
       retries: 5
       start_period: 30s
+{{#PROXY_EXTERNAL}}
+    # An external proxy is not on matrix-net and can only reach the homeserver
+    # through a published port. Bound to proxy.bind_address, loopback by default.
+    ports:
+      - "{{PROXY_BIND}}:{{HS_PORT}}:8008"
+{{/PROXY_EXTERNAL}}
+{{#PROXY_INTERNAL}}
     ports: []
+{{/PROXY_INTERNAL}}

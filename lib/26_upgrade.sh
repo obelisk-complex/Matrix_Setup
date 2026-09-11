@@ -3,6 +3,11 @@
 # Detects existing installation, offers upgrade options.
 set -euo pipefail
 
+# upgrade_prompt returns this when the operator picks "Reconfigure settings":
+# the caller continues into the ordinary wizard/phase run instead of exiting.
+# A status rather than a global, so the signal cannot be read stale.
+readonly E_UPGRADE_RECONFIGURE=10
+
 # Extract the PostgreSQL major version from an image ref. Portable (no GNU
 # grep -P) and digest-aware: drops any @sha256 suffix, takes the tag after the
 # last colon, then its leading digits. A digest-only / non-numeric tag yields
@@ -47,13 +52,20 @@ upgrade_check() {
         exit "$E_CONFIG"
     fi
 
-    # Carry forward domain from previous install
+    # Carry forward domain from previous install. The domain is confirmed by
+    # construction here - it is the one the existing install was built with,
+    # and a mismatch aborted above - so a headless upgrade is not asked to
+    # re-confirm it.
     CONFIG[domain.name]="$prev_domain"
+    CONFIG[domain.confirmed]="true"
     CONFIG[homeserver.type]="$prev_hs"
 
     return 0
 }
 
+# Returns 0 when the chosen action is finished and the caller should stop,
+# E_UPGRADE_RECONFIGURE when it should continue into the wizard, and the
+# action's own non-zero status if one failed.
 upgrade_prompt() {
     log_step "Upgrade options"
 
@@ -66,7 +78,7 @@ upgrade_prompt() {
 
     case "$choice" in
         0) upgrade_pull_images ;;
-        1) return 0 ;; # Continue to wizard/config for reconfigure
+        1) return "$E_UPGRADE_RECONFIGURE" ;;
         2) upgrade_bridges ;;
         3) log_info "Aborted."; exit "$E_OK" ;;
     esac
@@ -78,29 +90,44 @@ upgrade_pull_images() {
     local install_dir="${CONFIG[install_dir]:-$DEFAULT_INSTALL_DIR}"
     local compose_file="$install_dir/podman-compose.yml"
 
-    # Check PostgreSQL major version before pulling
-    local current_pg_major=""
-    current_pg_major=$(podman exec matrix-postgres psql -U synapse -tAc "SHOW server_version" 2>/dev/null | cut -d. -f1) || true
+    local db_user="${CONFIG[database.user]:-synapse}"
+    local db_name="${CONFIG[database.name]:-synapse}"
 
-    if [[ -n "$current_pg_major" ]]; then
-        local new_pg_major
-        new_pg_major=$(_pg_major_from_image "$POSTGRES_IMAGE")
-        if [[ -n "$new_pg_major" && "$new_pg_major" != "$current_pg_major" ]]; then
-            log_error "PostgreSQL major version change detected: $current_pg_major -> $new_pg_major"
-            log_error "Major version upgrades require explicit migration (pg_upgrade or dump/restore)."
-            log_error "This is NOT safe to do automatically."
-            return 1
-        fi
+    # Check PostgreSQL major version before pulling. The stack is rootless, so
+    # this has to be asked as the matrix user: root's podman owns none of these
+    # containers and answers with nothing at all.
+    local current_pg_major=""
+    current_pg_major=$(run_as_user podman exec matrix-postgres \
+        psql -U "$db_user" -d "$db_name" -tAc "SHOW server_version" 2>/dev/null \
+        | cut -d. -f1) || true
+
+    if [[ -z "$current_pg_major" ]]; then
+        # Failing open here would pull a new major over a data directory the
+        # server cannot then read.
+        log_error "Cannot read the running PostgreSQL version from matrix-postgres."
+        log_error "Start the stack and re-run: the major-version check must pass before pulling."
+        return 1
+    fi
+
+    local new_pg_major
+    new_pg_major=$(_pg_major_from_image "$POSTGRES_IMAGE")
+    if [[ -n "$new_pg_major" && "$new_pg_major" != "$current_pg_major" ]]; then
+        log_error "PostgreSQL major version change detected: $current_pg_major -> $new_pg_major"
+        log_error "Major version upgrades require explicit migration (pg_upgrade or dump/restore)."
+        log_error "This is NOT safe to do automatically."
+        return 1
     fi
 
     # Pull new images
-    $COMPOSE_CMD -f "$compose_file" pull 2>&1 | while IFS= read -r line; do
+    local -a compose=()
+    compose_argv compose
+    run_as_user "${compose[@]}" -f "$compose_file" pull 2>&1 | while IFS= read -r line; do
         log_verbose "$line"
     done
 
     # Restart with new images
     log_substep "Restarting services with updated images..."
-    $COMPOSE_CMD -f "$compose_file" up -d 2>&1 | while IFS= read -r line; do
+    run_as_user "${compose[@]}" -f "$compose_file" up -d 2>&1 | while IFS= read -r line; do
         log_verbose "$line"
     done
 

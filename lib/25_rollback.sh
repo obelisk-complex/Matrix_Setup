@@ -177,6 +177,27 @@ _rollback_action() {
             systemctl --user disable "$service" &>/dev/null || \
                 systemctl disable "$service" &>/dev/null || true
             ;;
+        SERVICE_STOPPED)
+            # The installer stopped a service that was already running (the
+            # operator's own proxy). Put it back the way it was: `--now` starts
+            # the unit as well as enabling it, and is only carried out if the
+            # enable succeeded (systemctl(1)).
+            local stopped_service="${action_data%%|*}"
+            local was_enabled="${action_data#*|}"
+            local restore_verb=(enable --now)
+            [[ "$was_enabled" == "true" ]] || restore_verb=(start)
+            log_substep "Restoring service: $stopped_service"
+            # Reported and continued rather than aborted. Rollback runs when
+            # the install has already failed, and the actions still queued
+            # behind this one — restoring backed-up config, removing files the
+            # installer wrote — are exactly what the operator needs done. The
+            # defect this replaces was silence, so say so loudly instead.
+            if ! systemctl --user "${restore_verb[@]}" "$stopped_service" &>/dev/null && \
+               ! systemctl "${restore_verb[@]}" "$stopped_service" &>/dev/null; then
+                log_warn "Could not restore $stopped_service. Start it by hand with:"
+                log_warn "  systemctl ${restore_verb[*]} $stopped_service"
+            fi
+            ;;
         USER_CREATED)
             log_warn "Skipping user removal for safety: $action_data"
             log_warn "  Remove manually with: userdel $action_data"

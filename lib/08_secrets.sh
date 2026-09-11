@@ -93,9 +93,14 @@ _gen_secret() {
 }
 
 # Mirror the secrets from an already-sourced .env back into CONFIG. A .env that
-# lacks one is fatal rather than regenerated: a fresh macaroon key invalidates
-# every live access token, and a fresh postgres password desyncs from the
-# database that already exists on disk.
+# lacks one is fatal rather than regenerated: a fresh postgres password desyncs
+# from the database already on disk, and a fresh registration_shared_secret
+# breaks admin registration against a running server. Rotating the macaroon key
+# is less severe than it looks - it signs guest tokens, delete_pusher
+# unsubscribe links and OIDC session cookies, not ordinary access tokens, which
+# are opaque database rows (synapse/util/macaroons.py) - but it is still a
+# silent change to a live deployment, so it is not done behind the operator's
+# back either.
 _load_env_secrets() {
     local env_file="$1"
     local pairs=(

@@ -42,7 +42,7 @@ assert_eq "suse"    "$(_family_for_id opensuse-tumbleweed)"   "opensuse-tumblewe
 assert_eq "suse"    "$(_family_for_id sles 15.6)"             "sles -> suse"
 assert_eq "debian"  "$(_family_for_id ubuntu 24.04)"          "ubuntu -> debian"
 assert_eq "debian"  "$(_family_for_id debian 13)"             "debian -> debian"
-assert_eq "rhel"    "$(_family_for_id fedora 42)"             "fedora -> rhel"
+assert_eq "rhel"    "$(_family_for_id fedora 43)"             "fedora -> rhel"
 assert_eq "rhel"    "$(_family_for_id centos 9)"              "centos -> rhel"
 assert_eq "arch"    "$(_family_for_id arch)"                  "arch -> arch"
 assert_eq "unknown" "$(_family_for_id void)"                  "unrecognised ID -> unknown"
@@ -71,6 +71,61 @@ assert_true  "5.8.2 (Leap 16.1, RHEL 9 rebuilds) accepted" version_gte "5.8.2" "
 assert_true  "5.8.5 (CentOS Stream 9) accepted"        version_gte "5.8.5" "$MIN_PODMAN_VERSION"
 assert_true  "6.0.2 (openSUSE Tumbleweed) accepted"    version_gte "6.0.2" "$MIN_PODMAN_VERSION"
 assert_true  "6.1.1 (Arch) accepted"                   version_gte "6.1.1" "$MIN_PODMAN_VERSION"
+
+# --- Test: the supported-release list stated in the docs ---
+# Nothing under lib/ encodes a per-distro release floor: the only version gate
+# is MIN_PODMAN_VERSION against the podman actually installed (lib/05_prerequisites.sh).
+# The supported-release list therefore exists only in README.md and the spec,
+# which makes those two files the thing to pin.
+#
+# Fedora's minimum is 43. Fedora 41 (EOL 2025-12-15) and 42 (EOL 2026-05-27)
+# ship podman 5.2.5 and 5.4.1, which clear the floor, but both are past end of
+# life and receive no security updates — dates from endoflife.date/api/fedora.json,
+# podman versions from the releases/<N>/Everything/x86_64/os repodata each
+# release shipped with.
+README_FILE="$PROJECT_DIR/README.md"
+SPEC_FILE="$PROJECT_DIR/specs/2026-04-06-matrix-stack-setup-script.md"
+
+assert_file_exists "$README_FILE" "README.md is present to be checked"
+assert_file_exists "$SPEC_FILE" "the spec is present to be checked"
+
+# The claim of support lives in exactly two places: the README requirements
+# table and the spec's NFR-01 row. Releases named anywhere else — the "not
+# supported" paragraph under the README table — are deliberate exclusions, so
+# the scan is scoped to the two lists rather than the whole file.
+#
+# Both helpers emit a sentinel instead of the empty string when the list is
+# absent, and each list is checked by a matching pair: the assert_match proves
+# the text was found, which is what stops the paired assert_no_match from
+# passing on nothing.
+_readme_distro_table() {
+    [[ -f "$README_FILE" ]] || { printf 'README-MISSING'; return 0; }
+    local rows
+    rows=$(grep -E '^[[:space:]]*\| (Ubuntu|Debian|Fedora|CentOS|Arch|openSUSE)' "$README_FILE") \
+        || { printf 'TABLE-EMPTY'; return 0; }
+    printf '%s\n' "$rows"
+}
+
+_spec_nfr01_row() {
+    [[ -f "$SPEC_FILE" ]] || { printf 'SPEC-MISSING'; return 0; }
+    local row
+    row=$(grep -E '^\| NFR-01 ' "$SPEC_FILE") || { printf 'NFR01-MISSING'; return 0; }
+    printf '%s\n' "$row"
+}
+
+readme_table="$(_readme_distro_table)"
+spec_nfr01="$(_spec_nfr01_row)"
+
+assert_match 'Fedora 43 or newer' "$readme_table" \
+    "README requirements table gives Fedora 43 as the minimum"
+assert_no_match 'Fedora (39|40|41|42)' "$readme_table" \
+    "README requirements table lists no Fedora release below 43"
+assert_match 'Fedora 43\+' "$spec_nfr01" \
+    "spec NFR-01 gives Fedora 43+ as the supported range"
+# The NFR-01 row states its exclusions inline ("... are excluded by NFR-02"),
+# so only the "<release>+" supported-range form counts as a claim of support.
+assert_no_match 'Fedora (39|40|41|42)\+' "$spec_nfr01" \
+    "spec NFR-01 claims no Fedora release below 43 as supported"
 
 # --- Test: RAM detection returns a number ---
 detected_ram=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}') || detected_ram=""

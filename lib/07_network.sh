@@ -134,62 +134,6 @@ network_check_port_reachable() {
     return 1
 }
 
-# Cloudflare DNS record creation
-network_cloudflare_create_records() {
-    local domain="$1"
-    local token="$2"
-    local ipv4="$3"
-    local ipv6="${4:-}"
-
-    log_substep "Creating DNS records via Cloudflare API..."
-
-    # Get zone ID
-    local zone_name
-    zone_name=$(echo "$domain" | awk -F. '{print $(NF-1)"."$NF}')
-
-    local zone_id
-    zone_id=$(curl -sf -H "Authorization: Bearer $token" \
-        "https://api.cloudflare.com/client/v4/zones?name=$zone_name" | \
-        jq -r '.result[0].id // empty')
-
-    if [[ -z "$zone_id" ]]; then
-        log_error "Could not find Cloudflare zone for $zone_name"
-        return 1
-    fi
-
-    # Create A record
-    if [[ -n "$ipv4" ]]; then
-        local result
-        result=$(curl -sf -X POST \
-            -H "Authorization: Bearer $token" \
-            -H "Content-Type: application/json" \
-            "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records" \
-            -d "{\"type\":\"A\",\"name\":\"$domain\",\"content\":\"$ipv4\",\"ttl\":300,\"proxied\":false}")
-
-        if echo "$result" | jq -r '.success' | grep -q true; then
-            log_substep "A record created: $domain -> $ipv4"
-        else
-            log_warn "Failed to create A record: $(echo "$result" | jq -r '.errors[0].message // "unknown"')"
-        fi
-    fi
-
-    # Create AAAA record
-    if [[ -n "$ipv6" ]]; then
-        local result
-        result=$(curl -sf -X POST \
-            -H "Authorization: Bearer $token" \
-            -H "Content-Type: application/json" \
-            "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records" \
-            -d "{\"type\":\"AAAA\",\"name\":\"$domain\",\"content\":\"$ipv6\",\"ttl\":300,\"proxied\":false}")
-
-        if echo "$result" | jq -r '.success' | grep -q true; then
-            log_substep "AAAA record created: $domain -> $ipv6"
-        else
-            log_warn "Failed to create AAAA record"
-        fi
-    fi
-}
-
 # Print manual DNS instructions
 network_print_dns_instructions() {
     local domain="$1"

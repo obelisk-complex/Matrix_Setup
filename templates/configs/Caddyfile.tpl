@@ -5,9 +5,8 @@
 # Global options
 {
 	admin off
-{{#DNS_CHALLENGE}}
-	acme_dns cloudflare {env.CF_API_TOKEN}
-{{/DNS_CHALLENGE}}
+	# DNS-01 is not offered: it needs a DNS provider module the pinned stock
+	# Caddy image does not carry. See lib/13_caddy.sh.
 }
 
 # Shared security headers snippet

@@ -88,10 +88,18 @@ _generate_proxy_snippet() {
     local snippet_dir="$install_dir/proxy-snippets"
     mkdir -p "$snippet_dir"
 
+    # The backend address here is the one compose_assemble publishes the
+    # homeserver on in this mode, so the two have to be derived the same way:
+    # PORT_SYNAPSE (PORT_DENDRITE is the same port) bound to proxy.bind_address.
+    local hs_host
+    hs_host=$(proxy_bind_host "${CONFIG[proxy.bind_address]:-$DEFAULT_PROXY_BIND_ADDRESS}")
+
     # shellcheck disable=SC2034  # passed to template_render by name (nameref)
     declare -A snippet_vars=(
         [DOMAIN]="$domain"
+        [HS_HOST]="$hs_host"
         [HS_PORT]="$hs_port"
+        [WEBCLIENT_PORT]="$PORT_WEBCLIENT"
     )
     if [[ -n "${CONFIG[webclient.type]:-}" && "${CONFIG[webclient.type]}" != "none" ]]; then
         snippet_vars[WEBCLIENT]="true"
@@ -108,10 +116,11 @@ _generate_proxy_snippet() {
         *)       template="generic.txt.tpl";  output="matrix-proxy-requirements.txt" ;;
     esac
 
-    # template_render reads the template with `content=$(<"$input")`, and a
-    # redirection error on a variable assignment terminates a non-interactive
-    # shell outright (POSIX XCU 2.8.1). A missing template would therefore kill
-    # setup.sh mid-phase, past any handling written here, so it is checked first.
+    # Checked here so a missing template is reported against this path rather
+    # than as a generic render failure. template_render now returns non-zero on
+    # an unreadable input (it previously used `content=$(<"$input")`, whose
+    # redirection failure killed the shell under errexit, making call-site
+    # handling unreachable).
     local template_path="${SCRIPT_DIR}/templates/snippets/${template}"
     if [[ ! -f "$template_path" ]]; then
         log_error "Proxy snippet template not found: $template_path"
@@ -132,12 +141,25 @@ _generate_proxy_snippet() {
 
 _stop_existing_proxy() {
     local services=("nginx" "apache2" "httpd" "traefik" "caddy")
+    local svc was_enabled
     for svc in "${services[@]}"; do
         if systemctl is-active "$svc" &>/dev/null; then
+            # Recorded as SERVICE_STOPPED — the rollback handler for
+            # SERVICE_STARTED stops and disables, which here would shut the
+            # operator's proxy down a second time instead of restoring it.
+            # `disable` below runs whether or not the unit was enabled, so
+            # carry the prior state: re-enabling a hand-started proxy would
+            # change its boot behaviour, and only starting an enabled one
+            # would lose it at the next boot. systemctl(1): is-enabled exits 0
+            # when the unit is enabled, non-zero otherwise.
+            was_enabled="false"
+            if systemctl is-enabled "$svc" &>/dev/null; then
+                was_enabled="true"
+            fi
             log_substep "Stopping $svc..."
             systemctl stop "$svc"
             systemctl disable "$svc"
-            rollback_snapshot "proxy" "SERVICE_STARTED" "$svc"
+            rollback_snapshot "proxy" "SERVICE_STOPPED" "${svc}|${was_enabled}"
         fi
     done
 }

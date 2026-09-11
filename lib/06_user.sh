@@ -17,6 +17,25 @@ user_setup() {
     log_success "User '$matrix_user' configured for rootless Podman"
 }
 
+# Hand the finished install tree to the matrix user. Everything under
+# install_dir is written by root, but every container runs rootless as this
+# user and bind-mounts those paths, and the backup/media timers are user units
+# that execute scripts from the same tree. Run after the tree is written and
+# before anything is deployed.
+install_dir_set_ownership() {
+    local install_dir="${CONFIG[install_dir]:-$DEFAULT_INSTALL_DIR}"
+    local matrix_user="${CONFIG[matrix_user]:-$DEFAULT_MATRIX_USER}"
+
+    if [[ ! -d "$install_dir" ]]; then
+        log_debug "No install directory at $install_dir; nothing to chown"
+        return 0
+    fi
+
+    log_step "Assigning the install directory to $matrix_user"
+    chown -R "${matrix_user}:" "$install_dir"
+    log_success "$install_dir is owned by $matrix_user"
+}
+
 _create_user() {
     local user="$1"
 

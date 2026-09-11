@@ -249,6 +249,24 @@ _compose_build_vars() {
     _vars[FEDERATION_PORT]="$PORT_FEDERATION"
     _vars[STUN_PORT]="$PORT_STUN"
 
+    # With an external proxy there is no Caddy on matrix-net, so the operator's
+    # own proxy can only reach the homeserver through a published host port.
+    # PROXY_BIND defaults to loopback, which leaves the port reachable from this
+    # host and not from the network. The two flags are complementary because the
+    # fragment renderer has no negative block form.
+    # Both homeservers serve their client API on PORT_SYNAPSE (PORT_DENDRITE is
+    # the same port), which is the port the snippets tell the proxy to use.
+    if [[ "${CONFIG[proxy.external]:-false}" == "true" ]]; then
+        _vars[PROXY_EXTERNAL]="true"
+        _vars[PROXY_INTERNAL]="false"
+    else
+        _vars[PROXY_EXTERNAL]="false"
+        _vars[PROXY_INTERNAL]="true"
+    fi
+    _vars[HS_PORT]="$PORT_SYNAPSE"
+    _vars[WEBCLIENT_PORT]="$PORT_WEBCLIENT"
+    _vars[PROXY_BIND]="$(proxy_bind_host "${CONFIG[proxy.bind_address]:-$DEFAULT_PROXY_BIND_ADDRESS}")"
+
     # Feature flags
     _vars[FEDERATION]="${CONFIG[federation.enabled]:-true}"
     _vars[HAS_APPSERVICES]="${CONFIG[bridges.has_appservices]:-false}"
@@ -265,13 +283,9 @@ _compose_build_vars() {
         _vars[ENV_SECRETS]="true"
     fi
 
-    # DNS challenge
-    if [[ -n "${CONFIG[dns.cloudflare_api_token]:-}" ]]; then
-        _vars[DNS_CHALLENGE]="true"
-        _vars[CF_API_TOKEN]="${CONFIG[dns.cloudflare_api_token]}"
-    else
-        _vars[DNS_CHALLENGE]="false"
-    fi
+    # No CF_API_TOKEN for Caddy: DNS-01 was dropped because the pinned stock
+    # image carries no DNS provider module, so nothing in that container can
+    # use a Cloudflare token (lib/13_caddy.sh).
 
     # TLS for coturn
     _vars[TLS]="${CONFIG[coturn.tls]:-false}"
