@@ -105,10 +105,10 @@ Validate changes to the config with
 On a `v*` tag, GitHub Actions:
 
 1. Runs the whole of `ci.yml` as a `verify` job that everything else `needs:`
-   — shellcheck, the full test suite, and `pin-digests.sh --check`. A tag is
+   (shellcheck, the full test suite, and `pin-digests.sh --check`). A tag is
    not a branch, so `ci.yml`'s own `push` trigger never fires for `v*`; without
    this the release would sign and attest a commit that had never been linted or
-   tested. **A cosign bundle attests provenance, not quality** — it says which
+   tested. **A cosign bundle attests provenance, not quality**: it says which
    workflow produced the file, not that the file passed anything.
 2. Generates a CycloneDX SBOM per image with `syft` (uploaded as release assets,
    not committed — see `.gitignore`).
