@@ -13,7 +13,7 @@
 #     the container for the same reason).
 #   * The call authenticated with a token read from $install_dir/.admin-token,
 #     which nothing in this repository ever writes. Synapse's media admin API
-#     requires a server-admin access token (Synapse v1.127.1,
+#     requires a server-admin access token (Synapse v1.160.0,
 #     docs/admin_api/media_admin_api.md), so an empty bearer would be rejected
 #     even from inside the container.
 #
@@ -22,7 +22,7 @@
 # from `media_retention.remote_media_lifetime`, which
 # templates/configs/homeserver.synapse.yaml.tpl already renders. Both mechanisms
 # use the same criterion - Synapse's config option purges media "if it has not
-# been accessed in a given amount of time" (v1.127.1
+# been accessed in a given amount of time" (v1.160.0
 # docs/usage/configuration/config_documentation.md, `media_retention`), and
 # purge_media_cache removes "all cached media that was last accessed before
 # this timestamp" (media_admin_api.md). The timer therefore reports the policy

@@ -717,3 +717,19 @@ that would not start and took ports 80 and 443 with it. Dropping DNS-01 left the
 Cloudflare token injected into a container with no use for it. Removing that
 injection left the config key dead. Removing the key left the API function
 unreachable. Four findings across three auditors were facets of one dead feature.
+
+## Supply chain closed out (2026-09-11)
+
+| ID | Source | Severity | Finding | Disposition | Evidence / Link | Approved by |
+|---|---|---|---|---|---|---|
+| `dependency-auditor-3` (DEP-003) | dependency-auditor | HIGH | Pinned Synapse `v1.127.1` is affected by GHSA-8q93-326v-3m7g (high, fixed 1.152.1) plus two medium advisories. | accepted | **resolved**: bumped to `v1.160.0`. Target chosen over the 1.152.1 minimum because diffing `config_documentation.md` between the tags gives 0 keys removed and all 40 the template writes still present. `MIN_PG_VERSION` moved 13 to 14 (Synapse dropped PostgreSQL 13 at v1.143.0); covered by `tests/test_version_floors.sh`. | user, 2026-09-11 |
+| `dependency-auditor-4` | dependency-auditor | MEDIUM | `pin-digests.sh` takes the digest from the server-asserted `Docker-Content-Digest` header rather than computing it - trust on first use. | | **still open as a property of the script.** Mitigated in practice for this re-pin only: both new digests were verified by fetching the manifest body and hashing the raw bytes, and both images were identified from their config blobs as base-image rebuilds of the same upstream versions (caddy v2.11.4, postgres 16.14). The script itself was not changed. | |
+| `dependency-auditor-9` | dependency-auditor | MEDIUM | No dependency-update mechanism exists. | accepted | `renovate.json` added, tracking the Actions SHAs and all 17 image pins via a custom regex manager; validated with `renovate-config-validator --strict`. **Inert until the Renovate GitHub App is installed** - a third-party app taking write access to a repo that publishes signed releases, left as the user's decision. Honest coverage gap recorded: `PODMAN_COMPOSE_VERSION` and the AUR bootstrap are not tracked, and the weekly digest check can only re-resolve the tag already pinned, never propose a newer version - which is how Synapse came to sit 45 releases behind a green gate. | user, 2026-09-11 |
+
+Stale citations corrected: `lib/23_media_retention.sh:16,25` cited Synapse
+v1.127.1 docs for `media_retention.remote_media_lifetime` and the media admin
+API. Both were re-checked at v1.160.0 - same semantics, so the rationale stood
+and only the version was stale. Now cite v1.160.0. The remaining v1.127.1
+references in `docs/SUPPLY_CHAIN.md` are deliberate before/after comparisons
+(schema version, and a licence widening to
+`AGPL-3.0-or-later OR LicenseRef-Element-Commercial`) and are correct as written.

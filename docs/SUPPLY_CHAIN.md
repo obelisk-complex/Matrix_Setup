@@ -15,7 +15,7 @@ How container images and release artifacts are pinned, verified and attested.
   - On Arch, an AUR helper bootstrap (`_install_aur_helper`): a shallow
     `git clone` of `https://aur.archlinux.org/yay.git`, `makepkg` as an
     unprivileged user, then `pacman -U --noconfirm` on the result. This is
-    **not pinned** — it builds whatever is at the AUR package's HEAD, and a
+    **not pinned**: it builds whatever is at the AUR package's HEAD, and a
     PKGBUILD is arbitrary shell executed at build time. Pinning it would mean
     pinning an AUR commit, which the AUR does not make discoverable.
     Compensating controls: it is reached only on Arch and only when the official
@@ -26,8 +26,8 @@ How container images and release artifacts are pinned, verified and attested.
 - Licence: MIT (`LICENSE`), consistent with the README. The images deployed
   carry their own licences. Synapse is copyleft: the `v1.127.1` image declared
   `AGPL-3.0-or-later`, and `v1.160.0` declares
-  `AGPL-3.0-or-later OR LicenseRef-Element-Commercial` — a widening, not a new
-  obligation. Deploying an unmodified image is not derivation, so this does not
+  `AGPL-3.0-or-later OR LicenseRef-Element-Commercial`, a widening rather than a
+  new obligation. Deploying an unmodified image is not derivation, so this does not
   reach the installer's own licence.
 
 ## Tooling
@@ -63,8 +63,8 @@ release title, and they have already included a PostgreSQL floor change
 (v1.143.0 dropped PostgreSQL 13). `tests/test_version_floors.sh` asserts that
 `MIN_PG_VERSION` and `POSTGRES_IMAGE` stay coherent with the pinned Synapse, and
 `tests/test_templates.sh` re-renders `homeserver.yaml` for every registration
-policy — but neither can tell you a key changed meaning, so the upgrade notes
-are still a manual read.
+policy. Neither can tell you that a key changed meaning, though, so the upgrade
+notes are still a manual read.
 
 ## Automated dependency updates
 
@@ -85,8 +85,8 @@ What it covers, and what it does not:
 Renovate proposes *versions*; `scripts/pin-digests.sh --check` verifies
 *digests*. They are not substitutes. `--check` re-resolves the digest for the tag
 already pinned and can never suggest a newer tag, which is how `SYNAPSE_IMAGE`
-sat 45 releases behind upstream — carrying GHSA-8q93-326v-3m7g (high),
-GHSA-6qf2-7x63-mm6v and GHSA-fh66-fcv5-jjfr — while the drift gate stayed green.
+sat 45 releases behind upstream, carrying GHSA-8q93-326v-3m7g (high),
+GHSA-6qf2-7x63-mm6v and GHSA-fh66-fcv5-jjfr, while the drift gate stayed green.
 
 Two gaps to be aware of:
 
@@ -159,4 +159,4 @@ registries without confirming digest equivalence.
   v1.127.1's 89, so upgrading runs migrations and background updates on first
   start. `SCHEMA_COMPAT_VERSION` is unchanged at 84 in both, so rolling the
   image back to the previous pin still works against a migrated database. That
-  holds for this bump only — check it again on the next one.
+  holds for this bump only; check it again on the next one.
